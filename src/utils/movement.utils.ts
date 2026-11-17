@@ -410,15 +410,15 @@ export function getPeriodMovementsForMember(
 
     const periodVacations: MovementRecord[] = [];
     memberVacations.forEach(vac => {
-        // Check if linked to thisPeriodPass
-        if (thisPeriodPass && isVacationLinkedToPass(vac, thisPeriodPass, dayStatuses)) {
+        // Check if linked to a pass of this period (나눠 나간 외박이면 어느 구간이든)
+        if (periodPasses.some(p => isVacationLinkedToPass(vac, p, dayStatuses))) {
             periodVacations.push(vac);
             return;
         }
 
         // Check if linked to another pass of this member (e.g. next week or previous week pass)
-        const linkedOtherPass = memberPasses.find(p => 
-            p !== thisPeriodPass && isVacationLinkedToPass(vac, p, dayStatuses)
+        const linkedOtherPass = memberPasses.find(p =>
+            !periodPasses.includes(p) && isVacationLinkedToPass(vac, p, dayStatuses)
         );
         if (linkedOtherPass) {
             // It belongs to that other pass's period, so do NOT include here
@@ -439,6 +439,11 @@ export function getPeriodMovementsForMember(
 
     const allPeriodMovements: MovementRecord[] = [];
     if (thisPeriodPass) allPeriodMovements.push(thisPeriodPass);
+    // 당직을 피해 나눠 나간 외박: 이번 기간 외박 기록을 모두 넣는다 (툴팁에 '11.26, 11.29'로 묶여 보인다)
+    [...periodPasses]
+        .filter(p => p.type === 'pass' && p !== thisPeriodPass)
+        .sort((a, b) => a.startDate.localeCompare(b.startDate))
+        .forEach(p => allPeriodMovements.push(p));
     periodVacations.forEach(v => {
         if (!allPeriodMovements.some(m => m.id === v.id || (m.startDate === v.startDate && m.endDate === v.endDate && m.type === v.type))) {
             allPeriodMovements.push(v);
