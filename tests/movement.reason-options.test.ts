@@ -23,6 +23,9 @@ import {
     dutyReductionPrefix,
     splitDutyReductionPrefix,
     fitPassAroundDuty,
+    splitPassAroundDuty,
+    totalSegmentDays,
+    splittableDutyDays,
 } from '../src/utils/movement/movement.reason-options.ts';
 
 test('section keys come from sections and role', () => {
@@ -204,4 +207,29 @@ test('잔류 reason round-trips; a plain 잔류 is not a choice', () => {
     assert.deepEqual(parseStayReason('토당, S4 업무, PAO 업무로 인한 잔류'), { dutyLabels: ['토당'], tasks: ['S4 업무', 'PAO 업무'], custom: '', customOn: false });
     assert.deepEqual(parseStayReason('사정으로 인한 잔류'), { dutyLabels: [], tasks: [], custom: '사정', customOn: true });
     assert.deepEqual(parseStayReason('잔류'), { dutyLabels: [], tasks: [], custom: '', customOn: false });
+});
+
+// SPLIT-PASS-TESTS
+test('splitting a pass around duty keeps every leftover segment', () => {
+    const duty = (...days: string[]) => (iso: string) => days.includes(iso);
+    // 9/4~9/7, 9/5(토) 당직 → 9/4 원데이, 9/7 원데이 (9/6 리커버리 출발). 엑셀의 9/4, 9/7과 같다
+    assert.deepEqual(splitPassAroundDuty({ start: '2026-09-04', end: '2026-09-07' }, duty('2026-09-05')), [
+        { start: '2026-09-04', end: '2026-09-04' },
+        { start: '2026-09-07', end: '2026-09-07' },
+    ]);
+    assert.deepEqual(splitPassAroundDuty({ start: '2026-11-20', end: '2026-11-23' }, duty()), [{ start: '2026-11-20', end: '2026-11-23' }]);
+    assert.deepEqual(splitPassAroundDuty({ start: '2026-11-21', end: '2026-11-21' }, duty('2026-11-21')), []);
+    assert.equal(totalSegmentDays([{ start: '2026-09-04', end: '2026-09-04' }, { start: '2026-09-07', end: '2026-09-08' }]), 3);
+});
+
+test('splitting is offered only when the day before duty and the day after recovery are both pass days', () => {
+    const duty = (...days: string[]) => (iso: string) => days.includes(iso);
+    // 9/4~9/7, 9/5 당직: 전날 9/4, 다다음날 9/7 모두 외박일 → 나눌 수 있음
+    assert.deepEqual(splittableDutyDays({ start: '2026-09-04', end: '2026-09-07' }, duty('2026-09-05')), ['2026-09-05']);
+    // 9/4~9/6 (다다음날 9/7이 범위 밖) → 없음
+    assert.deepEqual(splittableDutyDays({ start: '2026-09-04', end: '2026-09-06' }, duty('2026-09-05')), []);
+    // 일반 투데이 주말(토~일)에 토요일 당직 → 없음
+    assert.deepEqual(splittableDutyDays({ start: '2026-11-14', end: '2026-11-15' }, duty('2026-11-14')), []);
+    // 출발일(시작 전날)만 당직 → 없음
+    assert.deepEqual(splittableDutyDays({ start: '2026-11-14', end: '2026-11-16' }, duty('2026-11-13')), []);
 });

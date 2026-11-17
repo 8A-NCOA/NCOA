@@ -26,6 +26,7 @@ export type IssueCode =
     | 'pass-duty-reduction-missing'
     | 'stay-reason-missing'
     | 'pass-duty-overlap'
+    | 'pass-segment-outside-period'
     | 'vacation-start-missing'
     | 'vacation-end-missing'
     | 'vacation-range-inverted'
@@ -77,6 +78,12 @@ export interface MovementEditInput {
     dutyIsoDates: string[];
     /** 이번 저장으로 바뀌거나 지워지지 않고 남는 같은 대상자의 기존 기록 */
     otherMovements: ExistingMovement[];
+    /** 당직을 피해 나눠 나가기를 켰는지 */
+    passSplit?: boolean;
+    /** 나눠 나갈 외박 구간들 (passSplit일 때. 출발~복귀에서 당직을 피해 계산한 것) */
+    passSegments?: { start: string; end: string }[];
+    /** 이번 기간 핵심 구간의 끝 (화요일). 나눈 구간이 이 뒤에 시작하면 다음 기간 기록이 된다 */
+    periodCoreEnd?: string;
 }
 
 const ISO_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -170,6 +177,11 @@ export function validateMovementEdit(input: MovementEditInput): EditIssue[] {
 
     // 1. 외박
     const passRangeOk = input.hasPass && !!input.passStart && !!input.passEnd && input.passStart <= input.passEnd;
+    const split = passRangeOk && !!input.passSplit;
+    const segments = split ? [...(input.passSegments || [])].sort((a, b) => a.start.localeCompare(b.start)) : [];
+    // 실제로 외박하는 구간들 (나누지 않으면 출발~복귀 하나)
+    const passRanges = split ? segments : passRangeOk ? [{ start: input.passStart, end: input.passEnd }] : [];
+    const passRangesOk = passRanges.length > 0;
     if (input.hasPass) {
         if (!input.passStart) {
             issues.push({ code: 'pass-start-missing', severity: 'error', fields: ['passStart'], message: '외박 출발일을 입력하세요.' });
@@ -189,7 +201,7 @@ export function validateMovementEdit(input: MovementEditInput): EditIssue[] {
             issues.push({ code: 'pass-duty-reduction-missing', severity: 'error', fields: ['passReason'], message: '외박 일수가 당직이나 업무 때문에 줄었는지 선택하세요.' });
         } else if (passRangeOk) {
             const expected = extractPassDaysFromReason(reason);
-            const actual = countDaysInclusive(input.passStart, input.passEnd);
+            const actual = passRanges.reduce((sum, r) => sum + countDaysInclusive(r.start, r.end), 0);
             if (expected !== null && expected !== actual) {
                 issues.push({
                     code: 'pass-reason-days-mismatch',
@@ -199,7 +211,23 @@ export function validateMovementEdit(input: MovementEditInput): EditIssue[] {
                 });
             }
         }
-        if (passRangeOk) {
+        if (split && segments.length === 0) {
+            issues.push({
+                code: 'pass-duty-overlap',
+                severity: 'error',
+                fields: ['passStart', 'passEnd'],
+                message: '당직을 피하면 남는 외박일이 없습니다. 날짜를 바꾸세요.'
+            });
+        }
+        if (split && input.periodCoreEnd && segments.slice(1).some(seg => seg.start > input.periodCoreEnd!)) {
+            issues.push({
+                code: 'pass-segment-outside-period',
+                severity: 'error',
+                fields: ['passStart', 'passEnd'],
+                message: '나눈 외박이 이번 기간(화요일) 뒤에 시작합니다. 다음 주 출타에서 따로 입력하세요.'
+            });
+        }
+        if (passRangeOk && !split) {
             // 외박하는 날에 당직이 있으면 안 된다.
             // 출발일(시작 전날)이 당직이면 안 된다. 당직 다음 날(리커버리)부터 시작하면 출발일이 당직이 되므로 불가.
             const departDay = addDaysIso(input.passStart, -1);
@@ -265,19 +293,21 @@ export function validateMovementEdit(input: MovementEditInput): EditIssue[] {
         }
     }
 
-    // 3. 외박 ↔ 휴가
-    if (passRangeOk && vacRangeOk) {
-        if (passVacationConflict(input.passStart, input.passEnd, input.vacationStart, input.vacationEnd)) {
-            issues.push({
-                code: 'pass-vacation-overlap',
-                severity: 'error',
-                fields: ['passStart', 'passEnd', 'vacationStart', 'vacationEnd'],
-                message: `외박(${rangeLabel(input.passStart, input.passEnd)})과 휴가(${rangeLabel(input.vacationStart, input.vacationEnd)}) 기간이 겹칩니다.`
-            });
+    // 3. 외박 ↔ 휴가 (나눠 나가면 구간마다)
+    if (passRangesOk && vacRangeOk) {
+        for (const r of passRanges) {
+            if (passVacationConflict(r.start, r.end, input.vacationStart, input.vacationEnd)) {
+                issues.push({
+                    code: 'pass-vacation-overlap',
+                    severity: 'error',
+                    fields: ['passStart', 'passEnd', 'vacationStart', 'vacationEnd'],
+                    message: `외박(${rangeLabel(r.start, r.end)})과 휴가(${rangeLabel(input.vacationStart, input.vacationEnd)}) 기간이 겹칩니다.`
+                });
+            }
         }
 
         // 외박 복귀일에 당일 휴가(같은 날 휴가 출발·복귀)는 없는 일이다
-        if (input.passEnd === input.vacationStart && input.vacationStart === input.vacationEnd) {
+        if (passRanges.some(r => r.end === input.vacationStart) && input.vacationStart === input.vacationEnd) {
             issues.push({
                 code: 'linked-one-day-vacation',
                 severity: 'error',
@@ -286,8 +316,7 @@ export function validateMovementEdit(input: MovementEditInput): EditIssue[] {
             });
         }
 
-        const passDepart = addDaysIso(input.passStart, -1);
-        const isVacationPassLink = input.vacationEnd === passDepart || input.vacationEnd === input.passStart;
+        const isVacationPassLink = passRanges.some(r => input.vacationEnd === addDaysIso(r.start, -1) || input.vacationEnd === r.start);
         if (isVacationPassLink && !input.allowVacationPassLink) {
             issues.push({
                 code: 'vacation-pass-link-disabled',
@@ -304,10 +333,10 @@ export function validateMovementEdit(input: MovementEditInput): EditIssue[] {
         const otherIsPass = other.type === 'pass' || other.type === 'stay';
         const label = `${typeLabel(other.type)}(${rangeLabel(other.startDate, other.endDate)})`;
 
-        if (passRangeOk) {
-            const conflict = otherIsPass
-                ? rangesOverlap(input.passStart, input.passEnd, other.startDate, other.endDate)
-                : passVacationConflict(input.passStart, input.passEnd, other.startDate, other.endDate);
+        if (passRangesOk) {
+            const conflict = passRanges.some(r => otherIsPass
+                ? rangesOverlap(r.start, r.end, other.startDate, other.endDate)
+                : passVacationConflict(r.start, r.end, other.startDate, other.endDate));
             if (conflict) {
                 issues.push({
                     code: 'pass-overlaps-existing',

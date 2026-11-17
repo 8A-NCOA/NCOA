@@ -32,6 +32,8 @@ export interface MovementSaveJobData {
     periodWindow: PeriodWindow;
     /** null이면 이번 기간 외박(잔류) 기록을 지운다 */
     pass: PassRecordInput | null;
+    /** 당직을 피해 나눠 나가는 외박 (구간마다 기록 하나, 사유는 같음). 있으면 pass 대신 쓴다 */
+    passes?: PassRecordInput[];
     /** null이면 이번 기간 휴가 기록을 지운다 */
     vacation: VacationRecordInput | null;
     sheet: {
@@ -71,12 +73,14 @@ export function splitPeriodDocs(docs: MovementDoc[], window: PeriodWindow) {
         .filter((d) => (d.type === "pass" || d.type === "stay") && inCore(d.startDate))
         .sort((a, b) => a.startDate.localeCompare(b.startDate));
     const ownPass = ownPassDocs[0] || null;
-    const passRange = ownPass ? { start: ownPass.startDate, end: ownPass.endDate } : null;
+    // 나눠 나간 외박이면 어느 구간에 이어진 휴가든 이번 기간 것
+    const passRanges = ownPassDocs.map((d) => ({ start: d.startDate, end: d.endDate }));
+    const linked = (vacStart: string) => passRanges.some((r) => isPassToVacationLink(r, vacStart));
 
     const ownVacDocs = docs
-        .filter((d) => d.type === "vacation" && ((passRange && isPassToVacationLink(passRange, d.startDate)) || inCore(d.startDate)))
+        .filter((d) => d.type === "vacation" && (linked(d.startDate) || inCore(d.startDate)))
         .sort((a, b) => a.startDate.localeCompare(b.startDate));
-    const ownVac = (passRange && ownVacDocs.find((v) => isPassToVacationLink(passRange, v.startDate))) || ownVacDocs[0] || null;
+    const ownVac = ownVacDocs.find((v) => linked(v.startDate)) || ownVacDocs[0] || null;
 
     return { ownPass, ownPassDocs, ownVac, ownVacDocs };
 }
@@ -91,18 +95,19 @@ export interface MovementWritePlan {
  * 요청대로 이번 기간 문서를 맞추려면 무엇을 고치고/만들고/지울지.
  * 같은 요청을 두 번 처리해도 결과가 같다 (처음에 만든 문서를 두 번째에는 고친다).
  */
-export function planMovementWrites(existing: MovementDoc[], job: Pick<MovementSaveJobData, "memberName" | "periodWindow" | "pass" | "vacation">): MovementWritePlan {
+export function planMovementWrites(existing: MovementDoc[], job: Pick<MovementSaveJobData, "memberName" | "periodWindow" | "pass" | "passes" | "vacation">): MovementWritePlan {
     const split = splitPeriodDocs(existing, job.periodWindow);
     const plan: MovementWritePlan = { updates: [], creates: [], deletes: [] };
 
-    if (job.pass) {
-        const data = { type: job.pass.type, startDate: job.pass.startDate, endDate: job.pass.endDate, reason: job.pass.reason };
-        if (split.ownPass) plan.updates.push({ id: split.ownPass.id, data });
+    // 외박(잔류) 기록: 나눠 나가면 여러 개. 기존 문서를 날짜순으로 앞에서부터 고치고, 모자라면 만들고, 남으면 지운다.
+    const passes = job.passes && job.passes.length > 0 ? [...job.passes].sort((a, b) => a.startDate.localeCompare(b.startDate)) : job.pass ? [job.pass] : [];
+    passes.forEach((p, i) => {
+        const data = { type: p.type, startDate: p.startDate, endDate: p.endDate, reason: p.reason };
+        const doc = split.ownPassDocs[i];
+        if (doc) plan.updates.push({ id: doc.id, data });
         else plan.creates.push({ name: job.memberName, ...data });
-        split.ownPassDocs.forEach((d) => { if (!split.ownPass || d.id !== split.ownPass.id) plan.deletes.push(d.id); });
-    } else {
-        split.ownPassDocs.forEach((d) => plan.deletes.push(d.id));
-    }
+    });
+    split.ownPassDocs.slice(passes.length).forEach((d) => plan.deletes.push(d.id));
 
     if (job.vacation) {
         const data = { startDate: job.vacation.startDate, endDate: job.vacation.endDate, reason: job.vacation.reason };

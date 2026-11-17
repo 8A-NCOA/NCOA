@@ -190,3 +190,42 @@ test('a pass that departs on the recovery day writes 외박출발 there', () => 
     assert.equal(cells['11.21'], '외박');
     assert.equal(cells['11.24'], '외박복귀');
 });
+
+// SPLIT-PASS-TESTS
+test('a pass split around duty writes each segment and keeps the duty cell', () => {
+    // 11/20(금)~11/23(월) 외박, 11/21(토) 당직 → 11/20 원데이 + 11/23 원데이 (11/22 리커버리 출발)
+    const isDutyOn = (iso: string) => iso === '2026-11-21';
+    const passSegments = [{ start: '2026-11-20', end: '2026-11-20' }, { start: '2026-11-23', end: '2026-11-23' }];
+    const ctx = {
+        ...empty,
+        hasPass: true, passStart: '2026-11-20', passEnd: '2026-11-23', passSegments,
+        ownedOriginalDates: eachIsoDate('2026-11-19', '2026-11-23'),
+        retainedVacations: [], retainedPasses: [], isDutyOn,
+    };
+    const cells = buildCellUpdates({ ...ctx, allowVacationPassLink: false });
+    assert.equal(cells['11.19'], '외박출발');
+    assert.equal(cells['11.20'], '외박복귀');
+    assert.equal(cells['11.21'], '당직');
+    assert.equal(cells['11.22'], '외박출발');
+    assert.equal(cells['11.23'], '외박복귀');
+
+    const statuses = computeEditedDayStatuses(timelineOf('2026-11-18', '2026-11-24'), {}, ctx);
+    assert.equal(statuses['11.19'], 'pass-depart');
+    assert.equal(statuses['11.20'], 'pass');
+    assert.equal(statuses['11.21'], 'duty');
+    assert.equal(statuses['11.22'], 'recovery-pass-depart');
+    assert.equal(statuses['11.23'], 'pass');
+    assert.equal(statuses['11.24'], 'none');
+});
+
+test('split pass records in one period are all owned, and a vacation linked to the last one too', () => {
+    const window = { coreStart: '2026-11-18', coreEnd: '2026-11-24' };
+    const docs = [
+        { id: 'a', type: 'pass', startDate: '2026-11-20', endDate: '2026-11-20' },
+        { id: 'b', type: 'pass', startDate: '2026-11-23', endDate: '2026-11-23' },
+        { id: 'v', type: 'vacation', startDate: '2026-11-23', endDate: '2026-11-27' },
+    ];
+    const split = splitMemberDocs(docs, window);
+    assert.deepEqual(split.ownPassDocs.map(d => d.id), ['a', 'b']);
+    assert.equal(split.ownVac?.id, 'v');
+});

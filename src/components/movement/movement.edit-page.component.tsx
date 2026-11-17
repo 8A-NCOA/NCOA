@@ -26,6 +26,10 @@ import {
     BATCH_LOOKBACK_MONTHS,
     findWeekendInRange,
     fitPassAroundDuty,
+    splitPassAroundDuty,
+    totalSegmentDays,
+    splittableDutyDays,
+    passDayWord,
     reductionCausePrefix,
     dutyDayLabel,
     splitDutyReductionPrefix,
@@ -705,6 +709,57 @@ function DutyReductionQuestion({ dutyDays, value, onChange, taskLabels, tasks, o
     );
 }
 
+const CIRCLED_NUMBERS = '①②③④⑤⑥⑦⑧⑨';
+
+interface PassSplitOptionProps {
+    /** 외박 범위(출발일~복귀일) 안의 당직 날짜 */
+    dutyDays: string[];
+    on: boolean;
+    onChange: (on: boolean) => void;
+    /** 당직을 피해 나눈 구간들 */
+    segments: { start: string; end: string }[];
+}
+
+/**
+ * 외박 기간 사이에 당직이 끼어 있을 때: 당직을 피해 여러 번 나눠 나갈지 고른다 (엑셀의 '11/21, 11/23').
+ * 켜면 나눈 구간(출발 → 복귀, 일수)을 보여 준다. 끄면 기존처럼 당직 겹침 오류로 막는다.
+ */
+function PassSplitOption({ dutyDays, on, onChange, segments }: PassSplitOptionProps) {
+    const dutyText = dutyDays.map(dutyDayText).join(', ');
+    return (
+        <div className={cn(
+            'rounded-xl border px-3 py-2.5 transition-colors',
+            on ? 'border-blue-200 bg-blue-50/60' : 'border-amber-200 bg-amber-50/60'
+        )}>
+            <label className="flex items-center gap-2.5 cursor-pointer">
+                <input
+                    type="checkbox"
+                    checked={on}
+                    onChange={(e) => onChange(e.target.checked)}
+                    className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 shrink-0"
+                />
+                <span className={cn('text-xs font-bold', on ? 'text-blue-800' : 'text-amber-800')}>
+                    {dutyText} 당직을 피해 나눠 나가기
+                </span>
+            </label>
+            {on && (
+                segments.length > 0 ? (
+                    <ol className="mt-2 space-y-1">
+                        {segments.map((seg, i) => (
+                            <li key={seg.start} className="text-xs font-semibold text-blue-900">
+                                {CIRCLED_NUMBERS[i] || `${i + 1}.`} {dutyDayText(addDaysIso(seg.start, -1))} 출발 → {dutyDayText(seg.end)} 복귀
+                                <span className="text-blue-600"> · {passDayWord(countDaysInclusive(seg.start, seg.end))}</span>
+                            </li>
+                        ))}
+                    </ol>
+                ) : (
+                    <p className="mt-2 text-xs font-semibold text-red-600">당직을 피하면 남는 외박일이 없습니다.</p>
+                )
+            )}
+        </div>
+    );
+}
+
 interface StayReasonBlockProps {
     range: { start: string; end: string };
     dutyDays: string[];
@@ -831,6 +886,10 @@ interface MovementSectionProps {
     end: string;
     /** 제목 옆에 보여 줄 일수 */
     days: number;
+    /** 일수 배지 뒤에 덧붙일 말 (예: '2회') */
+    daysSuffix?: string;
+    /** 날짜 칸 바로 아래에 보여 줄 내용 (예: 당직을 피해 나눠 나가기) */
+    afterRange?: ReactNode;
     reasonChoice: ReasonChoice;
     reasonPreview: string;
     onRangeChange: (start: string, end: string) => void;
@@ -851,8 +910,8 @@ interface MovementSectionProps {
 function MovementSection({
     title, accent, enabled, onToggle,
     startField, endField, reasonField, startLabel, endLabel,
-    start, end, days, reasonChoice, reasonPreview, onRangeChange, minGapDays, defaultMonthIso, periodRange, onReasonChoiceChange,
-    options, detail = null, holidayOptions, customPlaceholder, issues, footer, note
+    start, end, days, daysSuffix, reasonChoice, reasonPreview, onRangeChange, minGapDays, defaultMonthIso, periodRange, onReasonChoiceChange,
+    options, detail = null, holidayOptions, customPlaceholder, issues, footer, note, afterRange
 }: MovementSectionProps) {
     const sectionIssues = issues.filter(i => i.fields.some(f => f === startField || f === endField || f === reasonField));
     const tone = issueTone(sectionIssues);
@@ -867,7 +926,7 @@ function MovementSection({
                     <h3 className="text-base font-black text-gray-900">{title}</h3>
                     {enabled && days > 0 && (
                         <span className={cn('text-[11px] font-bold px-2 py-0.5 rounded-full border', ACCENT[accent].badge)}>
-                            {days}일
+                            {days}일{daysSuffix ? ` · ${daysSuffix}` : ''}
                         </span>
                     )}
                     {tone === 'error' && <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />}
@@ -910,6 +969,7 @@ function MovementSection({
                         defaultMonthIso={defaultMonthIso}
                         periodRange={periodRange}
                     />
+                    {afterRange}
                     <ReasonPicker
                         field={reasonField}
                         options={options}
@@ -1064,7 +1124,12 @@ export function MovementEditPage({
     // 이전 기간에 시작해 이어지는 휴가나 다음 기간 휴가는 여기서 편집하지 않는다.
     const memberDocs = movements.filter(m => m.name === cleanName);
     const split = splitMemberDocs(memberDocs, periodWindow);
-    const ownPassRange: DateRange | null = split.ownPass
+    // 당직을 피해 나눠 나간 외박(이번 기간 외박 기록 2개 이상)은 첫 시작~마지막 끝을 한 범위로 열고 나누기를 켠다
+    const savedPassDocs = split.ownPassDocs.filter(d => d.type === 'pass');
+    const savedSplit = savedPassDocs.length > 1;
+    const ownPassRange: DateRange | null = savedSplit
+        ? { start: savedPassDocs[0].startDate, end: savedPassDocs[savedPassDocs.length - 1].endDate }
+        : split.ownPass
         ? { start: split.ownPass.startDate, end: split.ownPass.endDate }
         : findRunStartingInWindow(periodWindow, isPassStatus);
     const ownVacRange: DateRange | null = split.ownVac
@@ -1147,8 +1212,9 @@ export function MovementEditPage({
     // 잔류 업무 버튼: 섹션별 업무 + 저장된 사유에 있는데 지금 섹션에 없는 업무
     const savedStayTasks = parseStayReason(savedStayRecord?.reason || '').tasks;
     const stayTaskLabels = [...sectionTaskLabels, ...savedStayTasks.filter(t => !sectionTaskLabels.includes(t))];
-    const [passStart, setPassStart] = useState<string>(ownPassRange?.start || '');
-    const [passEnd, setPassEnd] = useState<string>(ownPassRange?.end || '');
+    // 저장된 기록이 잔류면 그 날짜(주말)는 외박 날짜가 아니다. 외박을 켜도 빈 칸에서 시작한다.
+    const [passStart, setPassStart] = useState<string>(savedStayRecord ? '' : ownPassRange?.start || '');
+    const [passEnd, setPassEnd] = useState<string>(savedStayRecord ? '' : ownPassRange?.end || '');
     // 저장된 외박 사유에 '토당으로 인한' 같은 당직 축소 원인이 있으면 떼어서 버튼 선택으로 되돌린다
     const savedPassReason = savedStayRecord ? '' : split.ownPass?.reason || '';
     const savedDutySplit = splitDutyReductionPrefix(savedPassReason);
@@ -1175,6 +1241,8 @@ export function MovementEditPage({
     });
     // 버튼으로 날짜를 채울 때 당직을 피했으면 그 안내
     const [passAutoNote, setPassAutoNote] = useState<string | null>(null);
+    // 외박 기간 사이에 낀 당직을 피해 여러 번 나눠 나가기 (엑셀의 '11/21, 11/23'처럼)
+    const [passSplit, setPassSplit] = useState<boolean>(savedSplit);
 
     const [vacationOn, setVacationOn] = useState<boolean>(!!ownVacRange);
     const [vacationStart, setVacationStart] = useState<string>(ownVacRange?.start || '');
@@ -1203,13 +1271,23 @@ export function MovementEditPage({
             if (range) {
                 const blocking = eachIsoDate(addDaysIso(range.start, -1), range.end).filter(isDutyOn);
                 const fitted = fitPassAroundDuty(range, isDutyOn);
+                const segments = splitPassAroundDuty(range, isDutyOn);
                 const dutyText = blocking.map(dutyDayText).join(', ');
-                if (!fitted) {
+                // 당직 전날과 다다음날이 모두 외박일이면(당직이 휴일 가운데) 가장 긴 구간만 남기지 않고 나눠 나간다.
+                // 일반(주말 투데이)은 나누지 않고 당직을 피해 채운다.
+                const canSplit = next.option !== '일반' && segments.length > 1 && splittableDutyDays(range, isDutyOn).length > 0;
+                if (canSplit) {
+                    setPassStart(segments[0].start);
+                    setPassEnd(segments[segments.length - 1].end);
+                    setPassSplit(true);
+                    setPassAutoNote(`${dutyText} 당직을 피해 ${segments.length}번으로 나눠 채웠습니다.`);
+                } else if (!fitted) {
                     setPassStart('');
                     setPassEnd('');
                     setPassOn(false);
                     setPassAutoNote(`${dutyText} 당직으로 ${next.option} 기간에 외박을 쓸 수 없어 외박을 '없음'으로 바꿨습니다.`);
                 } else {
+                    setPassSplit(false);
                     setPassStart(fitted.start);
                     setPassEnd(fitted.end);
                     setPassAutoNote(fitted.start !== range.start || fitted.end !== range.end
@@ -1222,7 +1300,12 @@ export function MovementEditPage({
     };
 
     // 버튼으로 고른 사유는 기간을 세어 일수를 붙인다: 외박 'N데이'(원데이~파이브데이), 휴가 'N일'. 직접 입력은 그대로 — 저장 시 검증.
-    const passDays = passStart && passEnd && passStart <= passEnd ? countDaysInclusive(passStart, passEnd) : 0;
+    // 나눠 나가기: 당직 전날과 다다음날이 모두 외박일일 때만 쓸 수 있다. 일수는 나눈 구간의 합.
+    const passRangeValid = !!passStart && !!passEnd && passStart <= passEnd;
+    const passRangeDutyDays = passRangeValid ? splittableDutyDays({ start: passStart, end: passEnd }, isDutyOn) : [];
+    const passSegments = passRangeValid ? splitPassAroundDuty({ start: passStart, end: passEnd }, isDutyOn) : [];
+    const splitActive = passOn && passSplit && passRangeDutyDays.length > 0;
+    const passDays = !passRangeValid ? 0 : splitActive ? totalSegmentDays(passSegments) : countDaysInclusive(passStart, passEnd);
     const vacationDays = vacationStart && vacationEnd && vacationStart <= vacationEnd ? countDaysInclusive(vacationStart, vacationEnd) : 0;
     // 이번 기간(수~화, 첫 출발일 포함)의 당직: 이것 때문에 외박 일수가 줄었는지 사용자가 고른다
     const periodDutyDays = eachIsoDate(addDaysIso(coreStartIso, -1), coreEndIso).filter(isDutyOn);
@@ -1268,7 +1351,7 @@ export function MovementEditPage({
     const vacationKindMissing = vacationChoice.option === REWARD_VACATION && !normalizeRewardKind(vacationChoice.detail);
 
     // 저장하지 않은 변경이 있으면 다른 기간으로 넘어가기 전에 확인한다
-    const formSnapshot = JSON.stringify([hasPass, passStart, passEnd, passReason, hasVacation, vacationStart, vacationEnd, vacationReason]);
+    const formSnapshot = JSON.stringify([hasPass, passStart, passEnd, passReason, splitActive, hasVacation, vacationStart, vacationEnd, vacationReason]);
     const [initialSnapshot] = useState(formSnapshot);
     const handleNavigate = (go?: () => void) => {
         if (!go || savingRef.current) return;
@@ -1277,7 +1360,8 @@ export function MovementEditPage({
     };
 
     // Automatically calculate isLinked: true only if pass end date matches vacation start date
-    const isLinked = !!(hasPass && hasVacation && passEnd && vacationStart && passEnd === vacationStart);
+    const lastPassEnd = splitActive && passSegments.length > 0 ? passSegments[passSegments.length - 1].end : passEnd;
+    const isLinked = !!(hasPass && hasVacation && lastPassEnd && vacationStart && lastPassEnd === vacationStart);
 
     // 저장 요청이 서버에 닿기를 기다리는 동안 (최대 1.5초)
     const [saving, setSaving] = useState(false);
@@ -1301,6 +1385,7 @@ export function MovementEditPage({
         hasPass: sheetHasPass,
         passStart,
         passEnd,
+        passSegments: splitActive && passSegments.length > 0 ? passSegments : undefined,
         hasVacation,
         vacationStart,
         vacationEnd,
@@ -1340,7 +1425,10 @@ export function MovementEditPage({
             vacationKindMissing,
             allowVacationPassLink,
             dutyIsoDates,
-            otherMovements
+            otherMovements,
+            passSplit: splitActive,
+            passSegments,
+            periodCoreEnd: coreEndIso
         });
     };
 
@@ -1389,9 +1477,15 @@ export function MovementEditPage({
 
         // 시트에 쓸 값 (원래 이번 기간 것이던 날 중 새 값이 없는 날은 핵심 구간 밖이라도 비운다)
         const cellUpdates = buildCellUpdates({ ...statusContext, allowVacationPassLink });
+        // 나눠 나가면 구간마다 외박 기록 하나 (사유는 같음). pass에는 첫 구간을 넣어 예전 서버와도 맞춘다.
+        const splitRecords: PassRecordInput[] | null = !stayMode && hasPass && splitActive && passSegments.length > 0
+            ? passSegments.map(seg => ({ type: 'pass' as const, startDate: seg.start, endDate: seg.end, reason: finalPassReason }))
+            : null;
         const passRecord: PassRecordInput | null = stayMode && stayRange
             ? { type: 'stay', startDate: stayRange.start, endDate: stayRange.end, reason: stayReasonText }
-            : (hasPass && passStart && passEnd)
+            : splitRecords
+                ? splitRecords[0]
+                : (hasPass && passStart && passEnd)
                 ? { type: passIsStay ? 'stay' : 'pass', startDate: passStart, endDate: passEnd, reason: finalPassReason }
                 : null;
         const vacationRecord: VacationRecordInput | null = hasVacation && vacationStart && vacationEnd
@@ -1405,6 +1499,7 @@ export function MovementEditPage({
             label: fullNameWithRank,
             periodWindow,
             pass: passRecord,
+            ...(splitRecords ? { passes: splitRecords } : {}),
             vacation: vacationRecord,
             sheet: { dayStatuses, cellUpdates },
             ...(pendingRecruitId ? { memberId: pendingRecruitId, deferSheet: true } : {})
@@ -1516,6 +1611,15 @@ export function MovementEditPage({
                             start={passStart ? addDaysIso(passStart, -1) : ''}
                             end={passEnd}
                             days={passDays}
+                            daysSuffix={splitActive && passSegments.length > 1 ? `${passSegments.length}회` : undefined}
+                            afterRange={passRangeDutyDays.length > 0 ? (
+                                <PassSplitOption
+                                    dutyDays={passRangeDutyDays}
+                                    on={passSplit}
+                                    onChange={(on) => { setPassSplit(on); setPassAutoNote(null); }}
+                                    segments={passSegments}
+                                />
+                            ) : undefined}
                             minGapDays={1}
                             defaultMonthIso={coreStartIso}
                             periodRange={{ start: coreStartIso, end: coreEndIso }}

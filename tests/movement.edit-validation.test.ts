@@ -200,3 +200,31 @@ test('잔류 without a chosen reason is blocked', () => {
     assert.deepEqual(codes({ stayReasonMissing: true }), ['stay-reason-missing']);
     assert.deepEqual(codes({ stayReasonMissing: false }), []);
 });
+
+// SPLIT-PASS-TESTS
+const splitInput = {
+    hasPass: true, passStart: '2026-11-20', passEnd: '2026-11-23',
+    dutyIsoDates: ['2026-11-21'],
+    passSplit: true,
+    passSegments: [{ start: '2026-11-20', end: '2026-11-20' }, { start: '2026-11-23', end: '2026-11-23' }],
+    periodCoreEnd: '2026-11-24',
+};
+
+test('a pass split around duty is not a duty overlap; days are the sum of segments', () => {
+    assert.deepEqual(codes({ ...splitInput, passReason: '토당으로 인한 일반 투데이' }), []);
+    assert.deepEqual(codes({ ...splitInput, passReason: '일반 포데이' }), ['pass-reason-days-mismatch']);
+    // 나누지 않으면 기존처럼 막는다
+    assert.ok(codes({ ...splitInput, passSplit: false, passReason: '일반 포데이' }).includes('pass-duty-overlap'));
+    // 당직을 피하면 남는 날이 없음
+    assert.deepEqual(codes({ ...splitInput, passSegments: [], passReason: '일반' }), ['pass-duty-overlap']);
+    // 둘째 구간이 이번 기간(화요일) 뒤에 시작
+    assert.deepEqual(codes({ ...splitInput, periodCoreEnd: '2026-11-22', passReason: '일반 투데이' }), ['pass-segment-outside-period']);
+});
+
+test('split segments are checked against a vacation one by one', () => {
+    const input = { ...splitInput, passReason: '일반 투데이', hasVacation: true };
+    // 마지막 구간 복귀일에 휴가 출발 = 외휴연계
+    assert.deepEqual(codes({ ...input, vacationStart: '2026-11-23', vacationEnd: '2026-11-26', vacationReason: '연가 4일' }), []);
+    // 첫 구간과 같은 날 휴가는 막는다
+    assert.ok(codes({ ...input, vacationStart: '2026-11-20', vacationEnd: '2026-11-20', vacationReason: '연가 1일' }).includes('pass-vacation-overlap'));
+});

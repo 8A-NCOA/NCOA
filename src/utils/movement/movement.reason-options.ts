@@ -315,27 +315,69 @@ export function fitPassAroundDuty(
     range: { start: string; end: string },
     isDuty: (iso: string) => boolean
 ): { start: string; end: string } | null {
-    // 당직이 아닌 날이 이어진 구간들
-    const segments: { start: string; end: string }[] = [];
-    for (let d = range.start; d <= range.end; d = addDaysIso(d, 1)) {
-        if (isDuty(d)) continue;
-        const last = segments[segments.length - 1];
-        if (last && last.end === addDaysIso(d, -1)) last.end = d;
-        else segments.push({ start: d, end: d });
-    }
     let best: { start: string; end: string } | null = null;
     let bestDays = 0;
-    for (const seg of segments) {
-        // 구간 바로 앞날이 당직이면 그날 출발할 수 없으므로 하루 늦게 시작
-        const start = isDuty(addDaysIso(seg.start, -1)) ? addDaysIso(seg.start, 1) : seg.start;
-        if (start > seg.end) continue;
-        const days = Math.round((Date.parse(seg.end) - Date.parse(start)) / 86400000) + 1;
+    for (const seg of splitPassAroundDuty(range, isDuty)) {
+        const days = segmentDays(seg);
         if (days > bestDays) {
-            best = { start, end: seg.end };
+            best = seg;
             bestDays = days;
         }
     }
     return best;
+}
+
+const segmentDays = (seg: { start: string; end: string }) =>
+    Math.round((Date.parse(seg.end) - Date.parse(seg.start)) / 86400000) + 1;
+
+/**
+ * 외박 기간을 당직을 피해 여러 번으로 나눈다 (엑셀의 '9/4, 9/7'처럼).
+ * 규칙은 fitPassAroundDuty와 같다: 당직인 날은 외박일이 아니고, 출발일(시작 전날)이 당직이면 하루 늦게 시작한다
+ * (당직 다음 날 리커버리에 출발). 남는 구간을 날짜순으로 모두 돌려준다.
+ * 9/4~9/7, 9/5 당직 → [9/4], [9/7]
+ */
+export function splitPassAroundDuty(
+    range: { start: string; end: string },
+    isDuty: (iso: string) => boolean
+): { start: string; end: string }[] {
+    if (!range.start || !range.end || range.start > range.end) return [];
+    // 당직이 아닌 날이 이어진 구간들
+    const runs: { start: string; end: string }[] = [];
+    for (let d = range.start; d <= range.end; d = addDaysIso(d, 1)) {
+        if (isDuty(d)) continue;
+        const last = runs[runs.length - 1];
+        if (last && last.end === addDaysIso(d, -1)) last.end = d;
+        else runs.push({ start: d, end: d });
+    }
+    const out: { start: string; end: string }[] = [];
+    for (const run of runs) {
+        // 구간 바로 앞날이 당직이면 그날 출발할 수 없으므로 하루 늦게 시작
+        const start = isDuty(addDaysIso(run.start, -1)) ? addDaysIso(run.start, 1) : run.start;
+        if (start <= run.end) out.push({ start, end: run.end });
+    }
+    return out;
+}
+
+/**
+ * 나눠 나가기를 고를 수 있는 당직: 당직 전날과 다다음날(리커버리 다음 날)이 모두 외박일(range 안, 당직 아님)인 당직.
+ * 그 밖의 경우(예: 일반 투데이 주말에 당직)는 나누지 않고 당직을 피해 날짜를 채운다.
+ */
+export function splittableDutyDays(
+    range: { start: string; end: string },
+    isDuty: (iso: string) => boolean
+): string[] {
+    if (!range.start || !range.end || range.start > range.end) return [];
+    const isPassDay = (iso: string) => iso >= range.start && iso <= range.end && !isDuty(iso);
+    const out: string[] = [];
+    for (let d = range.start; d <= range.end; d = addDaysIso(d, 1)) {
+        if (isDuty(d) && isPassDay(addDaysIso(d, -1)) && isPassDay(addDaysIso(d, 2))) out.push(d);
+    }
+    return out;
+}
+
+/** 나눈 외박 구간의 일수 합 */
+export function totalSegmentDays(segments: { start: string; end: string }[]): number {
+    return segments.reduce((sum, seg) => sum + segmentDays(seg), 0);
 }
 
 // ---------------------------------------------------------------------------

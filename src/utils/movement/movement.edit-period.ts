@@ -79,12 +79,18 @@ export function splitMemberDocs<T extends MovementDocLike>(docs: T[], window: Pe
         .filter(d => (d.type === 'pass' || d.type === 'stay') && passBelongsToPeriod({ start: d.startDate, end: d.endDate }, window))
         .sort((a, b) => a.startDate.localeCompare(b.startDate));
     const ownPass = ownPassDocs[0] || null;
-    const ownPassRange = ownPass ? { start: ownPass.startDate, end: ownPass.endDate } : null;
+    // 나눠 나간 외박이면 어느 구간에 이어진 휴가든 이번 기간 것
+    const ownPassRanges = ownPassDocs.map(d => ({ start: d.startDate, end: d.endDate }));
+    const linkedToOwnPass = (v: DateRange) => ownPassRanges.some(r => isPassToVacationLink(r, v));
 
     const ownVacDocs = docs
-        .filter(d => d.type === 'vacation' && vacationBelongsToPeriod({ start: d.startDate, end: d.endDate }, window, ownPassRange))
+        .filter(d => {
+            if (d.type !== 'vacation') return false;
+            const v = { start: d.startDate, end: d.endDate };
+            return linkedToOwnPass(v) || vacationBelongsToPeriod(v, window, null);
+        })
         .sort((a, b) => a.startDate.localeCompare(b.startDate));
-    const ownVac = (ownPassRange && ownVacDocs.find(v => isPassToVacationLink(ownPassRange, { start: v.startDate, end: v.endDate })))
+    const ownVac = ownVacDocs.find(v => linkedToOwnPass({ start: v.startDate, end: v.endDate }))
         || ownVacDocs[0]
         || null;
 
@@ -131,10 +137,22 @@ export interface EditedState {
     hasVacation: boolean;
     vacationStart: string;
     vacationEnd: string;
+    /** 당직을 피해 나눠 나가는 외박 구간들 (있으면 passStart~passEnd 대신 쓴다) */
+    passSegments?: DateRange[];
 }
 
 function editedPass(s: EditedState): DateRange | null {
     return s.hasPass && s.passStart && s.passEnd && s.passStart <= s.passEnd ? { start: s.passStart, end: s.passEnd } : null;
+}
+
+/** 이번 기간 외박 구간들 (날짜순). 나누지 않으면 출발~복귀 하나. */
+export function editedPasses(s: EditedState): DateRange[] {
+    if (!s.hasPass) return [];
+    if (s.passSegments && s.passSegments.length > 0) {
+        return s.passSegments.filter(p => p.start && p.end && p.start <= p.end).sort((a, b) => a.start.localeCompare(b.start));
+    }
+    const one = editedPass(s);
+    return one ? [one] : [];
 }
 
 function editedVacation(s: EditedState): DateRange | null {
@@ -163,10 +181,10 @@ export function computeEditedDayStatuses(
     ctx: StatusContext
 ): Record<string, string> {
     const out: Record<string, string> = { ...initial };
-    const pass = editedPass(ctx);
+    const passes = editedPasses(ctx);
     const vac = editedVacation(ctx);
-    const passDepart = pass ? addDaysIso(pass.start, -1) : '';
-    const isLinked = !!(pass && vac && pass.end === vac.start);
+    const departDays = new Set(passes.map(p => addDaysIso(p.start, -1)));
+    const isLinked = !!(vac && passes.some(p => p.end === vac.start));
     const owned = new Set(ctx.ownedOriginalDates);
     const vacationReturnDays = new Set<string>([
         ...(vac ? [vac.end] : []),
@@ -175,8 +193,8 @@ export function computeEditedDayStatuses(
 
     for (const { md, iso } of timeline) {
         const initialStatus = initial[md] || 'none';
-        const isPassDay = inRange(iso, pass);
-        const isDepartDay = !!pass && iso === passDepart;
+        const isPassDay = passes.some(p => inRange(iso, p));
+        const isDepartDay = departDays.has(iso);
         const isVacDay = inRange(iso, vac);
         // 당직과 리커버리는 외박·휴가 입력과 상관없이 항상 잔디에 보인다 (당직과 겹치는 입력은 저장 시 검사로 막는다)
         const isDutyDay = initialStatus === 'duty' || ctx.isDutyOn(iso);
@@ -191,7 +209,7 @@ export function computeEditedDayStatuses(
             out[md] = isDepartDay ? 'recovery-pass-depart' : 'recovery';
         } else if (isLinked && iso === vac!.start) {
             out[md] = 'linked';
-        } else if (vacationReturnDays.has(iso) && (isDepartDay || (isPassDay && iso === pass!.start))) {
+        } else if (vacationReturnDays.has(iso) && (isDepartDay || passes.some(p => iso === p.start))) {
             out[md] = 'vacation-pass-depart';
         } else if (isVacDay) {
             out[md] = 'vacation';
@@ -229,14 +247,13 @@ function vacationCellValue(iso: string, v: DateRange, linkedStart: boolean): str
  */
 export function buildCellUpdates(ctx: CellUpdateContext): Record<string, string> {
     const cells: Record<string, string> = {};
-    const pass = editedPass(ctx);
+    const passes = editedPasses(ctx);
     const vac = editedVacation(ctx);
-    const isLinked = !!(pass && vac && pass.end === vac.start);
-    const passDepart = pass ? addDaysIso(pass.start, -1) : '';
+    const isLinked = !!(vac && passes.some(p => p.end === vac.start));
 
     // 1. 원래 차지하던 날 중 새 값이 덮지 않는 날 비우기 (다른 기간 기록에 속하면 그 값으로 되돌림)
     for (const iso of ctx.ownedOriginalDates) {
-        const coveredByPass = !!pass && inRange(iso, passOccupiedRange(pass));
+        const coveredByPass = passes.some(p => inRange(iso, passOccupiedRange(p)));
         const coveredByVac = inRange(iso, vac);
         if (coveredByPass || coveredByVac) continue;
 
@@ -254,11 +271,13 @@ export function buildCellUpdates(ctx: CellUpdateContext): Record<string, string>
         }
     }
 
-    // 2. 새 외박
-    if (pass) {
-        // 시작 전날이 당직이면 리커버리 날(외박 첫날)에 바로 출발한다. 당직 칸에 '외박출발'을 쓰지 않는다.
-        // 다른 기간 외박이 출발일에 복귀하면 '외박복귀/외박출발'
-        cells[isoToMD(passDepart)] = composeSheetCell({ passReturn: ctx.retainedPasses.some(p => p.end === passDepart), passDepart: true }, false);
+    // 2. 새 외박 (나눠 나가면 구간마다)
+    const otherPasses = (self: DateRange) => [...ctx.retainedPasses, ...passes.filter(p => p !== self)];
+    for (const pass of passes) {
+        const passDepart = addDaysIso(pass.start, -1);
+        const linkedHere = !!(vac && pass.end === vac.start);
+        // 다른 외박(다른 기간 또는 앞 구간)이 출발일에 복귀하면 '외박복귀/외박출발'
+        cells[isoToMD(passDepart)] = composeSheetCell({ passReturn: otherPasses(pass).some(p => p.end === passDepart), passDepart: true }, false);
         for (const iso of eachIsoDate(pass.start, pass.end)) {
             if (iso !== pass.end) {
                 cells[isoToMD(iso)] = '외박';
@@ -267,9 +286,9 @@ export function buildCellUpdates(ctx: CellUpdateContext): Record<string, string>
             // 복귀일: 외휴연계면 휴가출발까지(당일 휴가면 휴가복귀까지), 다음 외박이 그날 출발하면 외박출발까지 함께 적는다
             cells[isoToMD(iso)] = composeSheetCell({
                 passReturn: true,
-                vacationDepart: isLinked,
-                vacationReturn: isLinked && vac!.start === vac!.end,
-                passDepart: !isLinked && ctx.retainedPasses.some(p => addDaysIso(p.start, -1) === iso),
+                vacationDepart: linkedHere,
+                vacationReturn: linkedHere && vac!.start === vac!.end,
+                passDepart: !linkedHere && otherPasses(pass).some(p => addDaysIso(p.start, -1) === iso),
             }, false);
         }
     }
@@ -282,8 +301,10 @@ export function buildCellUpdates(ctx: CellUpdateContext): Record<string, string>
         }
     }
 
-    // 4. 휴외연계: 휴가 복귀일에 외박 출발 (이번 기간 휴가 또는 다른 기간 휴가)
+    // 4. 휴외연계: 휴가 복귀일에 외박 출발 (이번 기간 휴가 또는 다른 기간 휴가). 나눠 나가면 첫 구간 기준.
+    const pass = passes[0];
     if (pass) {
+        const passDepart = addDaysIso(pass.start, -1);
         const vacations = [...(vac ? [vac] : []), ...ctx.retainedVacations];
         const returning = vacations.find(v => v.end === pass.start) || vacations.find(v => v.end === passDepart);
         if (returning) {
