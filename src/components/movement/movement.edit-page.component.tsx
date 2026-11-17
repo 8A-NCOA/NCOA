@@ -57,6 +57,7 @@ import {
     passOccupiedRange,
     computeEditedDayStatuses,
     buildCellUpdates,
+    withDutyCells,
     type DateRange,
     type StatusContext
 } from '../../utils/movement/movement.edit-period';
@@ -110,7 +111,7 @@ const ACCENT = {
     },
 } as const;
 
-/** 사유·줄어든 원인·잔류 사유가 함께 쓰는 칩 버튼 (dashed는 직접 입력) */
+/** 사유·외박 일수 감소 사유·잔류 사유가 함께 쓰는 칩 버튼 (dashed는 직접 입력) */
 const reasonChipClass = (accent: Accent, selected: boolean, dashed = false) => cn(
     'w-full min-w-0 h-10 px-2 rounded-xl border text-sm font-bold transition-all active:scale-95 truncate',
     dashed && 'border-dashed flex items-center justify-center gap-1.5',
@@ -623,7 +624,8 @@ interface DutyReductionQuestionProps {
 }
 
 /**
- * 외박 사유 바로 아래의 '줄어든 원인'. 사유 칸과 같은 칩 스타일로 보여 준다.
+ * 외박 사유 바로 아래의 '외박 일수 감소 사유'. 사유 칸과 같은 칩 스타일로 보여 준다.
+ * 여기서 고른 당직 날은 저장할 때 시트에 '당직'으로 채운다.
  * 당직 날짜 줄은 이번 기간에 당직이 있을 때만 나타나고(공식 휴일 줄과 같은 방식),
  * 업무와 직접 입력 칩은 항상 같은 자리에 있다. 저장 문자열 미리보기는 사유 칸이 맡는다.
  * 보상외박처럼 당직과 상관없는 경우가 있으므로 자동으로 판단하지 않는다.
@@ -639,7 +641,7 @@ function DutyReductionQuestion({ dutyDays, value, onChange, taskLabels, tasks, o
 
     return (
         <div>
-            <span className="block text-xs font-bold text-gray-600 mb-1.5">줄어든 원인</span>
+            <span className="block text-xs font-bold text-gray-600 mb-1.5">외박 일수 감소 사유</span>
             <div className="space-y-2">
                 {hasDuty && (
                     <div>
@@ -1476,7 +1478,11 @@ export function MovementEditPage({
         const finalVacReason = vacationReason.trim();
 
         // 시트에 쓸 값 (원래 이번 기간 것이던 날 중 새 값이 없는 날은 핵심 구간 밖이라도 비운다)
-        const cellUpdates = buildCellUpdates({ ...statusContext, allowVacationPassLink });
+        // 외박 일수 감소 사유로 고른 당직 날은 시트에 '당직'을 채운다 (외박으로 저장할 때만)
+        const cellUpdates = withDutyCells(
+            buildCellUpdates({ ...statusContext, allowVacationPassLink }),
+            sheetHasPass ? reducingDutyDays : []
+        );
         // 나눠 나가면 구간마다 외박 기록 하나 (사유는 같음). pass에는 첫 구간을 넣어 예전 서버와도 맞춘다.
         const splitRecords: PassRecordInput[] | null = !stayMode && hasPass && splitActive && passSegments.length > 0
             ? passSegments.map(seg => ({ type: 'pass' as const, startDate: seg.start, endDate: seg.end, reason: finalPassReason }))
@@ -1659,7 +1665,7 @@ export function MovementEditPage({
                                         if (passDutyReducedDays === null) setPassDutyReducedDays([]);
                                     }}
                                     accent="blue"
-                                    customPlaceholder="줄어든 원인 입력 (예: 사정)"
+                                    customPlaceholder="외박 일수 감소 사유 입력 (예: 사정)"
                                 />
                             ) : undefined}
                             note={passAutoNote ? (

@@ -7,7 +7,16 @@ import {
     eachIsoDate,
     isoToMD,
     findRunStartingInWindow,
+    withDutyCells,
 } from '../src/utils/movement/movement.edit-period.ts';
+
+test('duty days chosen as the reduction reason are written as 당직', () => {
+    const cells = withDutyCells({ '11.27': '외박출발', '11.28': '', '11.29': '외박복귀' }, ['2026-11-28', '2026-11-26']);
+    assert.equal(cells['11.28'], '당직', '비우던 칸 → 당직');
+    assert.equal(cells['11.26'], '당직', '쓰지 않던 칸 → 당직');
+    assert.equal(cells['11.27'], '외박출발', '외박 칸은 그대로');
+    assert.deepEqual(withDutyCells({ '11.29': '외박복귀' }, []), { '11.29': '외박복귀' });
+});
 import type { CellUpdateContext, EditedState } from '../src/utils/movement/movement.edit-period.ts';
 
 const timelineOf = (start: string, end: string) => eachIsoDate(start, end).map(iso => ({ iso, md: isoToMD(iso) }));

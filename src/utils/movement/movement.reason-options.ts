@@ -293,7 +293,7 @@ export function splitDutyReductionPrefix(reason: string): { cause: string; rest:
 }
 
 /**
- * '줄어든 원인'의 업무 버튼: 인원의 섹션마다 '섹션 업무' 하나씩 (HQ 제외, 섹션 순서대로).
+ * '외박 일수 감소 사유'의 업무 버튼: 인원의 섹션마다 '섹션 업무' 하나씩 (HQ 제외, 섹션 순서대로).
  * ['HQ', 'S4', 'PAO'] → ['S4 업무', 'PAO 업무']
  * MEDIC은 'KTA 업무'로 쓰고, S3·S6 단일 섹션이면 'BLC 업무'도 더한다 (수료 사유와 같은 규칙).
  */

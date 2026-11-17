@@ -230,6 +230,19 @@ export function computeEditedDayStatuses(
     return out;
 }
 
+/**
+ * 외박 일수 감소 사유로 고른 당직 날에 시트 '당직'을 채운다.
+ * 그날 외박·휴가 값을 쓰는 칸은 그대로 두고, 비우는 칸이거나 쓰지 않던 칸만 '당직'으로 바꾼다.
+ */
+export function withDutyCells(cells: Record<string, string>, dutyIsoDates: string[]): Record<string, string> {
+    const out = { ...cells };
+    dutyIsoDates.forEach(iso => {
+        const md = isoToMD(iso);
+        if (!out[md]) out[md] = '당직';
+    });
+    return out;
+}
+
 export interface CellUpdateContext extends StatusContext {
     allowVacationPassLink: boolean;
 }
