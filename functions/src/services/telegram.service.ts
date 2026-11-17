@@ -458,7 +458,9 @@ export async function processTelegramMessage(body: any) {
             helpMsg += `- \`/changesenior @[이름]\` : 새로운 시카 지정\n`;
             helpMsg += `- \`/sheet\` : 현재 구글 시트 연동 모드 조회\n`;
             helpMsg += `- \`/sheet test\` 또는 \`prod\` : 연동 모드 변경\n`;
-            helpMsg += `- \`/setremind\` : 현재 채팅방을 KTA 저녁순찰 리마인드 복귀 보고방으로 등록 (\`off\` 해제, \`status\` 조회)\n`;
+            helpMsg += `- \`/setremind\` : KTA 기수 중 매일 19:30 저녁순찰 리마인드 켜기 (현재 채팅방으로 발송)\n`;
+            helpMsg += `- \`/setremind off\` : 저녁순찰 리마인드 끄기\n`;
+            helpMsg += `- \`/setremind status\` : 리마인드를 받는 채팅방 확인\n`;
             helpMsg += `- \`/reset\` : 금일 복귀 완료 현황 전체 초기화\n`;
             helpMsg += `- \`/dev [터널주소]\` 또는 \`off\` : (개발자용) 로컬 터널 포워딩 설정\n`;
             helpMsg += `- \`/date YYYY-MM-DD\` 또는 \`reset\` : (디버그용) 기준 일자 강제 지정`;
