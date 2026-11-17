@@ -34,6 +34,15 @@ export async function getMovementSetting(): Promise<any> {
     return snap.exists ? snap.data() : null;
 }
 
+export async function getTelegramSetting(): Promise<any> {
+    const snap = await db.collection("settings").doc("telegram").get();
+    return snap.exists ? snap.data() : null;
+}
+
+export async function updateTelegramSetting(data: any): Promise<void> {
+    await db.collection("settings").doc("telegram").set(data, { merge: true });
+}
+
 export async function refreshSpreadsheetUpdatedAt(mode: "test" | "prod"): Promise<void> {
     const updateKey = mode === "prod" ? "prodUpdatedAt" : "testUpdatedAt";
     await db.collection("settings").doc("spreadsheet").set({

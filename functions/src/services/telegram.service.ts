@@ -6,8 +6,9 @@ import { getKSTDateStr, getKSTTimeStr } from "../utils/date.util";
 import { getMemberDisplayName, compareMembersByHobong } from "../utils/rank.util";
 import { parseSheetEvents, parseScheduleEvents } from "../utils/sheet.util";
 import { deleteDailyReturns } from "../repositories/return.repository";
-import { getDebugSetting, updateDebugSetting, getSeniorSetting, updateSeniorSetting, getSpreadsheetSetting, updateSpreadsheetSetting } from "../repositories/setting.repository";
+import { getDebugSetting, updateDebugSetting, getSeniorSetting, updateSeniorSetting, getSpreadsheetSetting, updateSpreadsheetSetting, getTelegramSetting, updateTelegramSetting } from "../repositories/setting.repository";
 import { getSheetData } from "../repositories/sheet.repository";
+import { isDateDuringKtaPeriod, KTA_EVENING_PATROL_REMINDER_MESSAGE } from "../utils/kta.util";
 import { parseAndSaveDayPass, getDayPassReport, clearDayPassReport, cancelDayPassEntriesFromMessage } from "./daypass.service";
 import { db } from "../config/firebase.config";
 
@@ -15,6 +16,45 @@ import { getAllMembers } from "../repositories/member.repository";
 import { getAllSchedules } from "../repositories/schedule.repository";
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
+
+export async function resolveReturnReportChatId(): Promise<string | number | null> {
+    const telegramSetting = await getTelegramSetting();
+    if (telegramSetting?.returnChatId !== undefined && telegramSetting?.returnChatId !== null && String(telegramSetting.returnChatId).trim() !== "") {
+        return telegramSetting.returnChatId;
+    }
+    const envChatId = process.env.TELEGRAM_RETURN_CHAT_ID?.trim();
+    return envChatId || null;
+}
+
+export async function sendKtaEveningPatrolReminder(targetDateStr?: string) {
+    const debugSetting = await getDebugSetting();
+    const todayStr = targetDateStr || debugSetting?.todayStr || getKSTDateStr();
+
+    const schedules = await getAllSchedules();
+    if (!isDateDuringKtaPeriod(todayStr, schedules)) {
+        logger.info("Skipping KTA evening patrol reminder: not in KTA period", { date: todayStr });
+        return { sent: false, reason: "not_kta_period", date: todayStr };
+    }
+
+    const chatId = await resolveReturnReportChatId();
+    if (!chatId) {
+        logger.warn("Skipping KTA evening patrol reminder: returnChatId is not configured", { date: todayStr });
+        return { sent: false, reason: "missing_chat_id", date: todayStr };
+    }
+
+    if (!TELEGRAM_TOKEN) {
+        logger.warn("Skipping KTA evening patrol reminder: TELEGRAM_BOT_TOKEN is missing", { date: todayStr });
+        return { sent: false, reason: "missing_telegram_token", date: todayStr };
+    }
+
+    await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+        chat_id: chatId,
+        text: KTA_EVENING_PATROL_REMINDER_MESSAGE
+    });
+
+    logger.info("Sent KTA evening patrol reminder", { date: todayStr, chatId });
+    return { sent: true, date: todayStr, chatId };
+}
 
 export async function getTodayReturneesHelper(todayStr: string) {
     const docRef = db.collection("dailyReturns").doc(todayStr);
@@ -279,6 +319,44 @@ export async function processTelegramMessage(body: any) {
             return;
         }
 
+        if (cmdName === "/setremind") {
+            const input = text.replace(/\/setremind(@\w+)?/, "").trim().toLowerCase();
+            if (input === "off") {
+                await updateTelegramSetting({
+                    returnChatId: null,
+                    returnChatTitle: null,
+                    updatedAt: FieldValue.serverTimestamp()
+                });
+                await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+                    chat_id: chatId,
+                    text: "🔕 저녁순찰 리마인드 대상 복귀 보고방 등록이 해제되었습니다."
+                });
+            } else if (input === "status") {
+                const targetChatId = await resolveReturnReportChatId();
+                const statusMsg = targetChatId
+                    ? (String(targetChatId) === String(chatId)
+                        ? "🟢 현재 채팅방이 저녁순찰 리마인드 복귀 보고방으로 등록되어 있습니다."
+                        : `ℹ️ 다른 채팅방(\`${targetChatId}\`)이 복귀 보고방으로 등록되어 있습니다.`)
+                    : "🔴 등록된 복귀 보고방이 없습니다. `/setremind` 를 입력해 현재 방을 등록하세요.";
+                await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+                    chat_id: chatId,
+                    text: statusMsg,
+                    parse_mode: "Markdown"
+                });
+            } else {
+                await updateTelegramSetting({
+                    returnChatId: chatId,
+                    returnChatTitle: body.message.chat.title || null,
+                    updatedAt: FieldValue.serverTimestamp()
+                });
+                await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+                    chat_id: chatId,
+                    text: "✅ 이 채팅방이 복귀 보고방으로 등록되었습니다.\nKTA 기수 동안 매일 19:30에 저녁순찰 리마인드 메시지가 발송됩니다."
+                });
+            }
+            return;
+        }
+
         if (cmdName === "/sheet") {
             const inputMode = text.replace(/\/sheet(@\w+)?/, "").trim().toLowerCase();
             if (inputMode === "test" || inputMode === "prod") {
@@ -380,6 +458,7 @@ export async function processTelegramMessage(body: any) {
             helpMsg += `- \`/changesenior @[이름]\` : 새로운 시카 지정\n`;
             helpMsg += `- \`/sheet\` : 현재 구글 시트 연동 모드 조회\n`;
             helpMsg += `- \`/sheet test\` 또는 \`prod\` : 연동 모드 변경\n`;
+            helpMsg += `- \`/setremind\` : 현재 채팅방을 KTA 저녁순찰 리마인드 복귀 보고방으로 등록 (\`off\` 해제, \`status\` 조회)\n`;
             helpMsg += `- \`/reset\` : 금일 복귀 완료 현황 전체 초기화\n`;
             helpMsg += `- \`/dev [터널주소]\` 또는 \`off\` : (개발자용) 로컬 터널 포워딩 설정\n`;
             helpMsg += `- \`/date YYYY-MM-DD\` 또는 \`reset\` : (디버그용) 기준 일자 강제 지정`;
