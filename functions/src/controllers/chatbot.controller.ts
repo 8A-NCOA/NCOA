@@ -1,10 +1,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { onRequest } from "firebase-functions/v2/https";
+import { onSchedule } from "firebase-functions/v2/scheduler";
 import * as logger from "firebase-functions/logger";
 import axios from "axios";
 import { corsHandler, db } from "../config/firebase.config";
 import { getKakaoUnreturnedStatus, getKakaoWeeklyRollCallStatus } from "../services/kakao.service";
-import { processTelegramMessage } from "../services/telegram.service";
+import { processTelegramMessage, sendKtaEveningPatrolReminder } from "../services/telegram.service";
 import { getKSTDateStr } from "../utils/date.util";
 
 export const kakaoBot = onRequest((req, res) => {
@@ -103,3 +104,14 @@ export const telegramBot = onRequest((req, res) => {
         }
     });
 });
+
+/**
+ * KTA 기수 동안 매일 19:30 (한국 시간)에 복귀 보고방으로 저녁순찰 리마인드 메시지를 보낸다.
+ */
+export const ktaEveningPatrolReminder = onSchedule(
+    { schedule: "30 19 * * *", timeZone: "Asia/Seoul" },
+    async () => {
+        const result = await sendKtaEveningPatrolReminder();
+        logger.info("ktaEveningPatrolReminder done", result);
+    }
+);
