@@ -257,12 +257,15 @@ export function dutyDayLabel(iso: string): string {
  * 외박 사유 앞에 붙일 축소 원인. 당직 날짜와 업무(KTA 업무 등)를 함께 쓸 수 있다.
  * ['2026-11-21'] → '토당으로 인한', 업무만 → 'KTA 업무로 인한', 둘 다 → '토당, KTA 업무로 인한'
  */
-export function reductionCausePrefix(dutyIsoDates: string[], task: string | null, custom = ''): string {
+export function reductionCausePrefix(dutyIsoDates: string[], tasks: string[] | string | null, custom = ''): string {
     const labels = [...new Set([...dutyIsoDates].sort().map(dutyDayLabel))];
-    if (task) labels.push(task);
+    const taskList = Array.isArray(tasks) ? tasks : tasks ? [tasks] : [];
+    taskList.forEach(t => { if (t && !labels.includes(t)) labels.push(t); });
     const text = custom.trim();
     if (text) labels.push(text);
-    return labels.length > 0 ? `${labels.join(', ')}으로 인한` : '';
+    if (labels.length === 0) return '';
+    const joined = labels.join(', ');
+    return `${joined}${reasonParticle(joined)} 인한`;
 }
 
 /** 당직 날짜만으로 만든 축소 원인 (업무 없음) */
@@ -271,19 +274,36 @@ export function dutyReductionPrefix(dutyIsoDates: string[]): string {
 }
 
 const DUTY_CAUSE_TOKEN = /^(?:[월화수목금토일](?:요일)?\s*당(?:직)?(?:근무)?|당직(?:근무)?)$/;
-const isCauseToken = (t: string) => DUTY_CAUSE_TOKEN.test(t) || STAY_TASK_LABELS.includes(t);
+/** 섹션 업무 원인('S4 업무', 'BLC/S6 업무' 같은 섹션 이름 + 업무) */
+const SECTION_TASK_TOKEN = /^[A-Z][A-Z0-9/-]* 업무$/;
+export const isSectionTaskLabel = (t: string) => SECTION_TASK_TOKEN.test(t);
+const isCauseToken = (t: string) => DUTY_CAUSE_TOKEN.test(t) || isSectionTaskLabel(t);
 
 /**
- * 저장된 외박 사유에서 당직 축소 원인을 떼어 낸다: '토당으로 인한 일반 원데이' → { rest: '일반 원데이' }.
- * 원인이 당직이 아니면(예: 'DBIDS로 인한 …') null.
+ * 저장된 외박 사유에서 당직·업무 축소 원인을 떼어 낸다: '토당으로 인한 일반 원데이' → { rest: '일반 원데이' }.
+ * 원인이 당직·섹션 업무가 아니면(예: 'DBIDS로 인한 …') null.
  */
-export function splitDutyReductionPrefix(reason: string): { cause: string; rest: string; task: string | null } | null {
+export function splitDutyReductionPrefix(reason: string): { cause: string; rest: string; tasks: string[] } | null {
     const m = /^(.+?)\s*(?:으로|로)\s*인한\s+(.+)$/.exec((reason || '').trim());
     if (!m) return null;
     const tokens = m[1].split(/\s*,\s*/).map(t => t.trim()).filter(Boolean);
     if (tokens.length === 0 || !tokens.every(isCauseToken)) return null;
-    const task = tokens.find(t => STAY_TASK_LABELS.includes(t)) || null;
-    return { cause: m[1].trim(), rest: m[2].trim(), task };
+    const tasks = tokens.filter(isSectionTaskLabel);
+    return { cause: m[1].trim(), rest: m[2].trim(), tasks };
+}
+
+/**
+ * '줄어든 원인'의 업무 버튼: 인원의 섹션마다 '섹션 업무' 하나씩 (HQ 제외, 섹션 순서대로).
+ * ['HQ', 'S4', 'PAO'] → ['S4 업무', 'PAO 업무']
+ * MEDIC은 'KTA 업무'로 쓰고, S3·S6 단일 섹션이면 'BLC 업무'도 더한다 (수료 사유와 같은 규칙).
+ */
+export function getSectionTaskLabels(sectionKeys: string[]): string[] {
+    const out: string[] = [];
+    const add = (label: string) => { if (!out.includes(label)) out.push(label); };
+    const keys = sectionKeys.map(key => (key || '').trim().toUpperCase()).filter(k => k && k !== 'HQ');
+    keys.forEach(k => add(k === 'MEDIC' ? 'KTA 업무' : `${k} 업무`));
+    if (keys.length === 1 && (keys[0] === 'S3' || keys[0] === 'S6')) add('BLC 업무');
+    return out;
 }
 
 /**
@@ -321,22 +341,11 @@ export function fitPassAroundDuty(
 // ---------------------------------------------------------------------------
 // 잔류: 외박도 휴가도 없이 쉬는 날의 사유 (당직 요일 + 섹션별 업무 버튼 + 직접 입력)
 
-export const STAY_TASK_LABELS = ['KTA 업무', 'BLC 업무', 'PAO 업무'];
-
-/** 섹션에 따른 업무 버튼 하나. 수료 사유와 같은 우선순위(PAO → RSO → BLC → KTA·MEDIC). 해당하는 섹션이 없으면 null. */
-export function getStayTaskLabel(sectionKeys: string[]): string | null {
-    const grad = getGraduationReason(sectionKeys);
-    if (!grad) return null;
-    if (grad.startsWith('KTA/PAO')) return 'PAO 업무';
-    if (grad.startsWith('BLC')) return 'BLC 업무';
-    return 'KTA 업무'; // KTA 수료, KTA/RSO 수료
-}
-
 export interface StayChoice {
     /** 고른 당직 요일 라벨 (예: '토당') */
     dutyLabels: string[];
-    /** 섹션 업무 버튼을 골랐는지 */
-    task: boolean;
+    /** 고른 섹션 업무 ('S4 업무' 등) */
+    tasks: string[];
     custom: string;
     customOn: boolean;
 }
@@ -352,11 +361,11 @@ function reasonParticle(text: string): string {
     return '로';
 }
 
-/** 잔류 사유 문자열: '토당으로 인한 잔류', 'KTA 업무로 인한 잔류', '토당, KTA 업무로 인한 잔류'. 고른 것이 없으면 그냥 '잔류'. */
-export function composeStayReason(choice: StayChoice, periodDutyIso: string[], taskLabel: string | null): string {
+/** 잔류 사유 문자열: '토당으로 인한 잔류', 'S4 업무로 인한 잔류', '토당, S4 업무, PAO 업무로 인한 잔류'. 고른 것이 없으면 그냥 '잔류'. */
+export function composeStayReason(choice: StayChoice, periodDutyIso: string[], taskLabels: string[]): string {
     const dutyTokens = [...new Set([...periodDutyIso].sort().map(dutyDayLabel))].filter(l => choice.dutyLabels.includes(l));
     const tokens = [...dutyTokens];
-    if (choice.task && taskLabel) tokens.push(taskLabel);
+    taskLabels.filter(t => choice.tasks.includes(t)).forEach(t => tokens.push(t));
     const custom = choice.customOn ? choice.custom.trim() : '';
     if (custom) tokens.push(custom);
     if (tokens.length === 0) return STAY_REASON;
@@ -366,12 +375,12 @@ export function composeStayReason(choice: StayChoice, periodDutyIso: string[], t
 
 /** 저장된 잔류 사유를 고른 상태로 되돌린다. 'X로 인한 잔류' 형식이 아니면(예: 그냥 '잔류') 아무것도 고르지 않은 상태. */
 export function parseStayReason(reason: string): StayChoice {
-    const choice: StayChoice = { dutyLabels: [], task: false, custom: '', customOn: false };
+    const choice: StayChoice = { dutyLabels: [], tasks: [], custom: '', customOn: false };
     const m = /^(.+?)\s*(?:으로|로)\s*인한\s+잔류$/.exec((reason || '').trim());
     if (!m) return choice;
     for (const token of m[1].split(/\s*,\s*/).map(t => t.trim()).filter(Boolean)) {
         if (/^[월화수목금토일]당$/.test(token)) choice.dutyLabels.push(token);
-        else if (STAY_TASK_LABELS.includes(token)) choice.task = true;
+        else if (isSectionTaskLabel(token)) { if (!choice.tasks.includes(token)) choice.tasks.push(token); }
         else {
             choice.customOn = true;
             choice.custom = choice.custom ? `${choice.custom}, ${token}` : token;
