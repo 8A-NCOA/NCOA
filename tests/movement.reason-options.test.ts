@@ -17,11 +17,15 @@ import {
     composeCustomPassReason,
     composeStayReason,
     parseStayReason,
-    getStayTaskLabel,
+    getSectionTaskLabels,
+    reductionCausePrefix,
     dutyDayLabel,
     dutyReductionPrefix,
     splitDutyReductionPrefix,
     fitPassAroundDuty,
+    splitPassAroundDuty,
+    totalSegmentDays,
+    splittableDutyDays,
 } from '../src/utils/movement/movement.reason-options.ts';
 
 test('section keys come from sections and role', () => {
@@ -122,15 +126,29 @@ test('duty reduction prefix uses the weekday shorthand', () => {
     assert.equal(dutyReductionPrefix(['2026-11-21']), '토당으로 인한');
     assert.equal(dutyReductionPrefix(['2026-11-21', '2026-11-20']), '금당, 토당으로 인한');
     assert.equal(dutyReductionPrefix([]), '');
+    assert.equal(reductionCausePrefix(['2026-11-21'], ['S4 업무', 'PAO 업무']), '토당, S4 업무, PAO 업무로 인한');
+    assert.equal(reductionCausePrefix([], [], '사정'), '사정으로 인한');
+});
+
+test('reduction task buttons come from each section', () => {
+    assert.deepEqual(getSectionTaskLabels(['HQ', 'S4', 'PAO']), ['S4 업무', 'PAO 업무']);
+    assert.deepEqual(getSectionTaskLabels(['KTA']), ['KTA 업무']);
+    assert.deepEqual(getSectionTaskLabels(['HQ']), []);
+    assert.deepEqual(getSectionTaskLabels(['MEDIC']), ['KTA 업무']);
+    assert.deepEqual(getSectionTaskLabels(['KTA', 'MEDIC']), ['KTA 업무']);
+    assert.deepEqual(getSectionTaskLabels(['HQ', 'S6']), ['S6 업무', 'BLC 업무']);
+    assert.deepEqual(getSectionTaskLabels(['S3']), ['S3 업무', 'BLC 업무']);
+    assert.deepEqual(getSectionTaskLabels(['S3', 'S4']), ['S3 업무', 'S4 업무']);
 });
 
 test('saved reasons with a duty cause are split back', () => {
-    assert.deepEqual(splitDutyReductionPrefix('토당으로 인한 일반 원데이'), { cause: '토당', rest: '일반 원데이', task: null });
-    assert.deepEqual(splitDutyReductionPrefix('금당, 토당으로 인한 Staff Duty 원데이'), { cause: '금당, 토당', rest: 'Staff Duty 원데이', task: null });
-    assert.deepEqual(splitDutyReductionPrefix('일요일 당직으로 인한 일반 원데이'), { cause: '일요일 당직', rest: '일반 원데이', task: null });
-    assert.deepEqual(splitDutyReductionPrefix('당직근무로 인한 일반 원데이'), { cause: '당직근무', rest: '일반 원데이', task: null });
-    assert.deepEqual(splitDutyReductionPrefix('KTA 업무로 인한 일반 원데이'), { cause: 'KTA 업무', rest: '일반 원데이', task: 'KTA 업무' });
-    assert.deepEqual(splitDutyReductionPrefix('토당, BLC 업무로 인한 일반 투데이'), { cause: '토당, BLC 업무', rest: '일반 투데이', task: 'BLC 업무' });
+    assert.deepEqual(splitDutyReductionPrefix('토당으로 인한 일반 원데이'), { cause: '토당', rest: '일반 원데이', tasks: [] });
+    assert.deepEqual(splitDutyReductionPrefix('금당, 토당으로 인한 Staff Duty 원데이'), { cause: '금당, 토당', rest: 'Staff Duty 원데이', tasks: [] });
+    assert.deepEqual(splitDutyReductionPrefix('일요일 당직으로 인한 일반 원데이'), { cause: '일요일 당직', rest: '일반 원데이', tasks: [] });
+    assert.deepEqual(splitDutyReductionPrefix('당직근무로 인한 일반 원데이'), { cause: '당직근무', rest: '일반 원데이', tasks: [] });
+    assert.deepEqual(splitDutyReductionPrefix('KTA 업무로 인한 일반 원데이'), { cause: 'KTA 업무', rest: '일반 원데이', tasks: ['KTA 업무'] });
+    assert.deepEqual(splitDutyReductionPrefix('토당, BLC 업무로 인한 일반 투데이'), { cause: '토당, BLC 업무', rest: '일반 투데이', tasks: ['BLC 업무'] });
+    assert.deepEqual(splitDutyReductionPrefix('S4 업무, PAO 업무로 인한 일반 원데이'), { cause: 'S4 업무, PAO 업무', rest: '일반 원데이', tasks: ['S4 업무', 'PAO 업무'] });
     // 당직이 아닌 원인은 그대로 둔다
     assert.equal(splitDutyReductionPrefix('DBIDS로 인한 일반 원데이'), null);
     assert.equal(splitDutyReductionPrefix('일반 투데이'), null);
@@ -168,33 +186,50 @@ test('custom 외박 reasons get the day count too', () => {
 });
 
 test('잔류 reason: 당직 요일과 업무 버튼을 X로 인한 잔류 형식으로, 없으면 빈 값', () => {
-    const none = { dutyLabels: [], task: false, custom: '', customOn: false };
+    const none = { dutyLabels: [], tasks: [], custom: '', customOn: false };
     const duty = ['2026-11-21', '2026-11-22'];
-    assert.equal(composeStayReason({ ...none, dutyLabels: ['토당'] }, duty, 'KTA 업무'), '토당으로 인한 잔류');
-    assert.equal(composeStayReason({ ...none, task: true }, duty, 'KTA 업무'), 'KTA 업무로 인한 잔류');
-    assert.equal(composeStayReason({ ...none, dutyLabels: ['일당', '토당'], task: true }, duty, 'BLC 업무'), '토당, 일당, BLC 업무로 인한 잔류');
-    assert.equal(composeStayReason({ ...none, customOn: true, custom: '사정' }, duty, null), '사정으로 인한 잔류');
-    assert.equal(composeStayReason({ ...none, task: true }, duty, null), '잔류');
+    const labels = ['S4 업무', 'PAO 업무'];
+    assert.equal(composeStayReason({ ...none, dutyLabels: ['토당'] }, duty, labels), '토당으로 인한 잔류');
+    assert.equal(composeStayReason({ ...none, tasks: ['S4 업무'] }, duty, labels), 'S4 업무로 인한 잔류');
+    assert.equal(composeStayReason({ ...none, dutyLabels: ['일당', '토당'], tasks: ['PAO 업무', 'S4 업무'] }, duty, labels), '토당, 일당, S4 업무, PAO 업무로 인한 잔류');
+    assert.equal(composeStayReason({ ...none, customOn: true, custom: '사정' }, duty, []), '사정으로 인한 잔류');
+    // 버튼에 없는 업무는 무시
+    assert.equal(composeStayReason({ ...none, tasks: ['KTA 업무'] }, duty, labels), '잔류');
     // 아무것도 고르지 않으면 그냥 '잔류'
-    assert.equal(composeStayReason(none, duty, 'PAO 업무'), '잔류');
-    assert.equal(composeStayReason({ ...none, customOn: true, custom: '  ' }, duty, null), '잔류');
+    assert.equal(composeStayReason(none, duty, labels), '잔류');
+    assert.equal(composeStayReason({ ...none, customOn: true, custom: '  ' }, duty, []), '잔류');
     // 고른 당직 요일이 기간에 없으면 무시
-    assert.equal(composeStayReason({ ...none, dutyLabels: ['금당'] }, duty, null), '잔류');
-});
-
-test('잔류 업무 버튼은 섹션에 따라 하나: KTA·MEDIC→KTA, BLC→BLC, PAO→PAO', () => {
-    assert.equal(getStayTaskLabel(['KTA']), 'KTA 업무');
-    assert.equal(getStayTaskLabel(['MEDIC']), 'KTA 업무');
-    assert.equal(getStayTaskLabel(['BLC']), 'BLC 업무');
-    assert.equal(getStayTaskLabel(['BLC', 'S3']), 'BLC 업무');
-    assert.equal(getStayTaskLabel(['HQ', 'S6']), 'BLC 업무');
-    assert.equal(getStayTaskLabel(['KTA', 'PAO']), 'PAO 업무');
-    assert.equal(getStayTaskLabel(['HQ']), null);
+    assert.equal(composeStayReason({ ...none, dutyLabels: ['금당'] }, duty, []), '잔류');
 });
 
 test('잔류 reason round-trips; a plain 잔류 is not a choice', () => {
-    assert.deepEqual(parseStayReason('토당으로 인한 잔류'), { dutyLabels: ['토당'], task: false, custom: '', customOn: false });
-    assert.deepEqual(parseStayReason('토당, PAO 업무로 인한 잔류'), { dutyLabels: ['토당'], task: true, custom: '', customOn: false });
-    assert.deepEqual(parseStayReason('사정으로 인한 잔류'), { dutyLabels: [], task: false, custom: '사정', customOn: true });
-    assert.deepEqual(parseStayReason('잔류'), { dutyLabels: [], task: false, custom: '', customOn: false });
+    assert.deepEqual(parseStayReason('토당으로 인한 잔류'), { dutyLabels: ['토당'], tasks: [], custom: '', customOn: false });
+    assert.deepEqual(parseStayReason('토당, S4 업무, PAO 업무로 인한 잔류'), { dutyLabels: ['토당'], tasks: ['S4 업무', 'PAO 업무'], custom: '', customOn: false });
+    assert.deepEqual(parseStayReason('사정으로 인한 잔류'), { dutyLabels: [], tasks: [], custom: '사정', customOn: true });
+    assert.deepEqual(parseStayReason('잔류'), { dutyLabels: [], tasks: [], custom: '', customOn: false });
+});
+
+// SPLIT-PASS-TESTS
+test('splitting a pass around duty keeps every leftover segment', () => {
+    const duty = (...days: string[]) => (iso: string) => days.includes(iso);
+    // 9/4~9/7, 9/5(토) 당직 → 9/4 원데이, 9/7 원데이 (9/6 리커버리 출발). 엑셀의 9/4, 9/7과 같다
+    assert.deepEqual(splitPassAroundDuty({ start: '2026-09-04', end: '2026-09-07' }, duty('2026-09-05')), [
+        { start: '2026-09-04', end: '2026-09-04' },
+        { start: '2026-09-07', end: '2026-09-07' },
+    ]);
+    assert.deepEqual(splitPassAroundDuty({ start: '2026-11-20', end: '2026-11-23' }, duty()), [{ start: '2026-11-20', end: '2026-11-23' }]);
+    assert.deepEqual(splitPassAroundDuty({ start: '2026-11-21', end: '2026-11-21' }, duty('2026-11-21')), []);
+    assert.equal(totalSegmentDays([{ start: '2026-09-04', end: '2026-09-04' }, { start: '2026-09-07', end: '2026-09-08' }]), 3);
+});
+
+test('splitting is offered only when the day before duty and the day after recovery are both pass days', () => {
+    const duty = (...days: string[]) => (iso: string) => days.includes(iso);
+    // 9/4~9/7, 9/5 당직: 전날 9/4, 다다음날 9/7 모두 외박일 → 나눌 수 있음
+    assert.deepEqual(splittableDutyDays({ start: '2026-09-04', end: '2026-09-07' }, duty('2026-09-05')), ['2026-09-05']);
+    // 9/4~9/6 (다다음날 9/7이 범위 밖) → 없음
+    assert.deepEqual(splittableDutyDays({ start: '2026-09-04', end: '2026-09-06' }, duty('2026-09-05')), []);
+    // 일반 투데이 주말(토~일)에 토요일 당직 → 없음
+    assert.deepEqual(splittableDutyDays({ start: '2026-11-14', end: '2026-11-15' }, duty('2026-11-14')), []);
+    // 출발일(시작 전날)만 당직 → 없음
+    assert.deepEqual(splittableDutyDays({ start: '2026-11-14', end: '2026-11-16' }, duty('2026-11-13')), []);
 });

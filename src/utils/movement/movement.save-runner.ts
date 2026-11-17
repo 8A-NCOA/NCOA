@@ -36,6 +36,8 @@ export interface SaveJobInput {
     label: string;
     periodWindow: { coreStart: string; coreEnd: string };
     pass: PassRecordInput | null;
+    /** 당직을 피해 나눠 나가는 외박 구간들 (같은 사유). 있으면 서버가 pass 대신 쓴다 */
+    passes?: PassRecordInput[];
     vacation: VacationRecordInput | null;
     sheet: { dayStatuses: Record<string, string>; cellUpdates: Record<string, string> };
     /** 시트에 행이 아직 없는 신병의 인원 id (deferSheet와 함께) */

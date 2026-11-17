@@ -57,3 +57,34 @@ test('processing the same request twice gives the same result', () => {
     assert.deepEqual(second.creates, []);
     assert.deepEqual(second.updates.map(u => u.id), ['created']);
 });
+
+// SPLIT-PASS-TESTS
+test('a split pass saves one record per segment', () => {
+    const w = { coreStart: '2026-11-18', coreEnd: '2026-11-24' };
+    const reason = '토당으로 인한 일반 투데이';
+    const passes = [
+        { type: 'pass' as const, startDate: '2026-11-20', endDate: '2026-11-20', reason },
+        { type: 'pass' as const, startDate: '2026-11-23', endDate: '2026-11-23', reason },
+    ];
+    const one: MovementDoc[] = [{ id: 'p', type: 'pass', startDate: '2026-11-20', endDate: '2026-11-22' }];
+    const two: MovementDoc[] = [
+        { id: 'a', type: 'pass', startDate: '2026-11-20', endDate: '2026-11-20' },
+        { id: 'b', type: 'pass', startDate: '2026-11-23', endDate: '2026-11-23' },
+    ];
+
+    // 1개 → 2개: 고치고 하나 더 만든다
+    const grow = planMovementWrites(one, { memberName: 'x', periodWindow: w, pass: passes[0], passes, vacation: null });
+    assert.deepEqual(grow.updates.map(u => [u.id, u.data.startDate]), [['p', '2026-11-20']]);
+    assert.deepEqual(grow.creates.map(c => [c.startDate, c.reason]), [['2026-11-23', reason]]);
+    assert.deepEqual(grow.deletes, []);
+
+    // 2개 → 2개: 둘 다 고친다 (다시 저장해도 늘지 않음)
+    const same = planMovementWrites(two, { memberName: 'x', periodWindow: w, pass: passes[0], passes, vacation: null });
+    assert.deepEqual(same.updates.map(u => u.id), ['a', 'b']);
+    assert.deepEqual(same.creates, []);
+
+    // 2개 → 1개 (나누기 끔, passes 없는 예전 형식): 첫 기록을 고치고 나머지는 지운다
+    const shrink = planMovementWrites(two, { memberName: 'x', periodWindow: w, pass: passes[0], vacation: null });
+    assert.deepEqual(shrink.updates.map(u => u.id), ['a']);
+    assert.deepEqual(shrink.deletes, ['b']);
+});
