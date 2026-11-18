@@ -9,6 +9,7 @@ import { isDateDuringKtaPeriod, isDateDuringBlcPeriod } from '../../utils/duty/d
 import { useMovementSettings } from '../../hooks/movement/useMovementSettings';
 import { compareTableOrder, getTableSectionInfo, toEnglishRank } from '../../utils/movement/movement.table-order';
 import { isPlaceholderRecruitName, pendingRecruitKey } from '../../utils/member/member.recruit';
+import { buildSectionTableRows, renderSectionTable, SECTION_TABLE_FILTERS, type SectionTableFilter } from '../../utils/movement/movement.section-table';
 
 interface MovementSheetViewProps {
     sheetWeeks: any[];
@@ -34,7 +35,7 @@ export function MovementSheetView({
     isRecentlyEdited
 }: MovementSheetViewProps) {
     const { allowVacationPassLink } = useMovementSettings();
-    const [previewData, setPreviewData] = useState<{ html: string; text: string; enclosure: string; enclosureHtml: string; remarks: string; remarksHtml: string } | null>(null);
+    const [previewData, setPreviewData] = useState<{ html: string; text: string; enclosure: string; enclosureHtml: string; remarks: string; remarksHtml: string; sectionTables: Record<SectionTableFilter, { html: string; text: string }> } | null>(null);
 
     const currentWeek = sheetWeeks[currentWeekIndex];
     const timeline = currentWeek ? (currentWeek.timeline || []) : [];
@@ -952,6 +953,26 @@ export function MovementSheetView({
                 const sec = row.mainSec === 'HQ' ? `HQ ${row.subSec}` : row.mainSec;
                 return `${row.no}\t${row.englishName}\t${row.rankEnglish}\t${sec}\t${row.remarks}\t${row.phoneNumber}`;
             }).join('\n');
+
+            // Table 섹션별 보기 (BLC / KTA / HQ): 메모 형식 표, 외박과 휴가를 나눠서
+            const sectionMembers = dbMembers
+                .filter((m: any) => m.role !== 'runner')
+                .map((m: any) => {
+                    const rankStr = m.enlistmentDate
+                        ? calculateRank(new Date(m.enlistmentDate), m.earlyPromotion || 0, baseDate || new Date())
+                        : (m.rank || '');
+                    return {
+                        name: extractPureMemberName(m.name),
+                        englishName: m.englishName,
+                        rankEnglish: toEnglishRank(rankStr, m.name || ''),
+                        enlistmentDate: m.enlistmentDate,
+                        sections: m.sections,
+                    };
+                });
+            const sectionTables = Object.fromEntries(SECTION_TABLE_FILTERS.map(filter => [
+                filter,
+                renderSectionTable(buildSectionTableRows(sectionMembers, movements, filter, copyStartIso, copyEndIso)),
+            ])) as Record<SectionTableFilter, { html: string; text: string }>;
 
             const allRemarksDates: Date[] = [];
 
@@ -2006,7 +2027,8 @@ ${hasStaffDutyInOfficialPeriod ? '\n      <li style="margin: 0; padding: 0; line
                 enclosure: enclosureText,
                 enclosureHtml,
                 remarks: remarksText,
-                remarksHtml
+                remarksHtml,
+                sectionTables
             });
         } catch (err) {
             console.error('Clipboard copy error:', err);
@@ -2076,6 +2098,7 @@ ${hasStaffDutyInOfficialPeriod ? '\n      <li style="margin: 0; padding: 0; line
                     enclosureHtmlContent={previewData.enclosureHtml}
                     remarksContent={previewData.remarks}
                     remarksHtmlContent={previewData.remarksHtml}
+                    sectionTables={previewData.sectionTables}
                     onClose={() => setPreviewData(null)}
                 />
             )}

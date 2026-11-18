@@ -1,6 +1,7 @@
 import { X, Copy } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import DOMPurify from 'dompurify';
+import type { SectionTableFilter } from '../../utils/movement/movement.section-table';
 
 interface MovementPreviewModalProps {
     htmlContent: string;
@@ -9,10 +10,19 @@ interface MovementPreviewModalProps {
     enclosureHtmlContent: string;
     remarksContent: string;
     remarksHtmlContent: string;
+    /** Table의 섹션별 보기 (BLC / KTA / HQ) */
+    sectionTables: Record<SectionTableFilter, { html: string; text: string }>;
     onClose: () => void;
 }
 
 type TabType = 'table' | 'enclosure' | 'remarks';
+type TableFilter = 'ALL' | SectionTableFilter;
+const TABLE_FILTERS: { key: TableFilter; label: string }[] = [
+    { key: 'ALL', label: 'All' },
+    { key: 'BLC', label: 'BLC' },
+    { key: 'KTA', label: 'KTA' },
+    { key: 'HQ', label: 'HQ' },
+];
 
 export function MovementPreviewModal({
     htmlContent,
@@ -21,10 +31,16 @@ export function MovementPreviewModal({
     enclosureHtmlContent,
     remarksContent,
     remarksHtmlContent,
+    sectionTables,
     onClose
 }: MovementPreviewModalProps) {
     const [activeTab, setActiveTab] = useState<TabType>('table');
     const [copied, setCopied] = useState(false);
+    const [tableFilter, setTableFilter] = useState<TableFilter>('ALL');
+
+    // Table 탭: All은 기존 표, BLC/KTA/HQ는 섹션별 외박·휴가 표
+    const tableHtml = tableFilter === 'ALL' ? htmlContent : sectionTables[tableFilter].html;
+    const tableText = tableFilter === 'ALL' ? plainTextContent : sectionTables[tableFilter].text;
 
     useEffect(() => {
         // Lock body scroll
@@ -38,8 +54,8 @@ export function MovementPreviewModal({
     const handleCopy = async () => {
         try {
             if (activeTab === 'table') {
-                const htmlBlob = new Blob([htmlContent], { type: 'text/html' });
-                const textBlob = new Blob([plainTextContent], { type: 'text/plain' });
+                const htmlBlob = new Blob([tableHtml], { type: 'text/html' });
+                const textBlob = new Blob([tableText], { type: 'text/plain' });
 
                 await navigator.clipboard.write([
                     new ClipboardItem({
@@ -86,7 +102,7 @@ export function MovementPreviewModal({
     };
 
     const currentHtmlContent = 
-        activeTab === 'table' ? htmlContent :
+        activeTab === 'table' ? tableHtml :
         activeTab === 'enclosure' ? enclosureHtmlContent :
         remarksHtmlContent;
 
@@ -129,6 +145,28 @@ export function MovementPreviewModal({
                         ))}
                     </div>
                 </div>
+
+                {activeTab === 'table' && (
+                    <div className="flex gap-1.5 shrink-0 -mt-2">
+                        {TABLE_FILTERS.map(({ key, label }) => (
+                            <button
+                                key={key}
+                                type="button"
+                                onClick={() => {
+                                    setTableFilter(key);
+                                    setCopied(false);
+                                }}
+                                className={`px-3.5 h-8 rounded-full text-xs font-bold border transition-all ${
+                                    tableFilter === key
+                                        ? 'bg-blue-600 border-blue-600 text-white'
+                                        : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+                                }`}
+                            >
+                                {label}
+                            </button>
+                        ))}
+                    </div>
+                )}
 
                 {/* Content Area - MS Word Web App Document Layout */}
                 <div className="flex-1 border border-gray-200 rounded-2xl bg-white overflow-auto p-4 sm:p-6 flex justify-center">
