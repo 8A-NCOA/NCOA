@@ -78,7 +78,9 @@ export function parseSheetEvents(prevData: any[], currData: any[], nextData: any
             // 휴가 복귀일에 외박 출발인 경우(휴외연계): 당일 저녁점호부터 외박 처리를 위해 pass-depart 이벤트 추가
             const nextDay = rowDays[idx + 1];
             const isVacationReturn = type === "vacation" && c.includes("휴가복귀");
-            const hasPassNextDay = nextDay && nextDay.cell && nextDay.cell.includes("외박") && !nextDay.cell.startsWith("외박복귀");
+            // 다음 날이 외박일(외박/외박복귀가 아닌 '외박' 칸)일 때만 오늘 출발. 다음 날이 '외박출발'이면 출발은 다음 날이다.
+            const hasPassNextDay = nextDay && nextDay.cell && nextDay.cell.includes("외박") &&
+                !nextDay.cell.startsWith("외박복귀") && !nextDay.cell.includes("외박출발");
             const hasPassToday = c.includes("외박출발");
 
             if (isVacationReturn && (hasPassNextDay || hasPassToday)) {

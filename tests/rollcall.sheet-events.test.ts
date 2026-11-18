@@ -62,3 +62,27 @@ test('외박복귀/휴가출발 is the 외휴연계 departure', () => {
     const vac = ev.find((e: any) => e.type === 'vacation');
     assert.equal(vac.isConsecutive, true);
 });
+
+test('휴가 복귀 다음 날 외박출발이면 복귀일에는 외박 출발이 아니다', () => {
+    // 11/15 휴가복귀, 11/16 외박출발, 11/17~18 외박
+    const cells = { '11.13': '휴가출발', '11.14': '휴가', '11.15': '휴가복귀', '11.16': '외박출발', '11.17': '외박', '11.18': '외박복귀' };
+    const onReturnDay = eventsFor(cells);
+    assert.equal(onReturnDay.length, 1);
+    assert.equal(onReturnDay[0].type, 'vacation');
+    assert.equal(onReturnDay[0].isReturnDay, true);
+
+    // 전날(11/14) 저녁점호의 '익일' 이벤트에도 11/15 외박 출발이 없어야 한다
+    const days = ['12', '13', '14', '15', '16', '17', '18'].map(d => ({ dateStr: `2026-11-${d}`, m: 11, d: Number(d), cell: (cells as Record<string, string>)[`11.${d}`] || '' }));
+    const data = [{ name: '홍길동', days }];
+    const tomorrowEvents = parseSheetEvents(data, data, data, '2026-11-14', '2026-11-15').filter((e: any) => e.startDate === '2026-11-15');
+    assert.ok(!tomorrowEvents.some((e: any) => e.type === 'pass' && e.isDepartDay));
+
+    // 출발일(11/16)에는 외박 출발로 잡힌다
+    const departEvents = parseSheetEvents(data, data, data, '2026-11-16', '2026-11-17').filter((e: any) => e.startDate === '2026-11-16');
+    assert.ok(departEvents.some((e: any) => e.type === 'pass' && e.isDepartDay));
+});
+
+test('휴가 복귀 다음 날이 바로 외박일이면(예전 표기) 복귀일에 외박 출발', () => {
+    const ev = eventsFor({ '11.13': '휴가출발', '11.14': '휴가', '11.15': '휴가복귀', '11.16': '외박', '11.17': '외박복귀' });
+    assert.ok(ev.some((e: any) => e.type === 'pass' && e.isDepartDay));
+});
