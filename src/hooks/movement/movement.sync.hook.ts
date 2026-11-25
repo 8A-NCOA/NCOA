@@ -44,6 +44,9 @@ export function getDatesBetween(start: Date, end: Date, includeStart: boolean = 
     return dates;
 }
 
+/** 이 탭 세션에서 보고 있던 외특 주차 (sessionStorage) */
+const ACTIVE_WEEK_KEY = 'ncoa_movement_active_week';
+
 export function selectDefaultWeekIndex(weeks: any[], baseDate?: Date) {
     if (!weeks || weeks.length === 0) return 0;
 
@@ -232,7 +235,8 @@ export function useMovementSync(baseDate?: Date) {
             );
 
             const timer = setTimeout(() => {
-                fetchSpreadsheet(sheetMode, sheetUpdatedAt, { silent });
+                // 시트가 갱신되어 다시 읽을 때는(다른 사람의 저장, 시트 직접 수정 등) 보고 있던 주차를 그대로 둔다
+                fetchSpreadsheet(sheetMode, sheetUpdatedAt, { silent, keepWeek: isTimestampChange });
                 lastLoadedTimestampRef.current = sheetUpdatedAt;
                 lastLoadedModeRef.current = sheetMode;
             }, delay);
@@ -241,22 +245,32 @@ export function useMovementSync(baseDate?: Date) {
         }
     }, [sheetMode, sheetUpdatedAt]);
 
-    const activeWeekStartDateRef = useRef<string | null>(null);
+    // 보고 있는 주차 (시작 날짜). 휴대폰에서 앱이 뒤로 갔다가 페이지가 다시 열려도 같은 주차를 보이도록 이 탭 세션에 남긴다.
+    const activeWeekStartDateRef = useRef<string | null>((() => {
+        try { return sessionStorage.getItem(ACTIVE_WEEK_KEY); } catch { return null; }
+    })());
 
     useEffect(() => {
         if (sheetWeeks && sheetWeeks[currentWeekIndex]) {
             activeWeekStartDateRef.current = sheetWeeks[currentWeekIndex].startDate;
+            try { sessionStorage.setItem(ACTIVE_WEEK_KEY, sheetWeeks[currentWeekIndex].startDate); } catch { /* 저장 못 해도 화면은 그대로 */ }
         }
     }, [sheetWeeks, currentWeekIndex]);
 
-    const fetchSpreadsheet = async (mode: 'test' | 'prod', updatedAtStr?: string, options: { silent?: boolean } = {}) => {
+    const fetchSpreadsheet = async (mode: 'test' | 'prod', updatedAtStr?: string, options: { silent?: boolean; keepWeek?: boolean } = {}) => {
         // silent: 로딩 화면을 띄우지 않고, 보고 있던 주차를 유지한 채 데이터만 바꾼다
         const silent = !!options.silent && sheetWeeks.length > 0;
+        // 보고 있던 주차 유지: 조용한 갱신, 시트 갱신에 따른 다시 읽기, 그리고 이 탭 세션에서 보던 주차가 있을 때(처음 열 때 포함)
+        const keepWeek = silent || !!options.keepWeek || !!activeWeekStartDateRef.current;
         const applyWeeks = (weeks: any[]) => {
             setSheetWeeks(weeks);
+            const keep = keepWeek ? weeks.findIndex((w: any) => w.startDate === activeWeekStartDateRef.current) : -1;
             if (silent) {
-                const keep = weeks.findIndex((w: any) => w.startDate === activeWeekStartDateRef.current);
                 setCurrentWeekIndex(keep !== -1 ? keep : selectDefaultWeekIndex(weeks, baseDate));
+            } else if (keep !== -1) {
+                setCurrentWeekIndex(keep);
+                setViewMode('sheet');
+                setParsedData(null);
             } else {
                 setCurrentWeekIndex(selectDefaultWeekIndex(weeks, baseDate));
                 setViewMode('sheet');

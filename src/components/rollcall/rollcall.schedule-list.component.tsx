@@ -5,6 +5,8 @@ import type { Member } from '../../types/member/member.type';
 import type { SheetEvent } from '../../types/rollcall/rollcall.type';
 import { RollCallMemberButton } from './rollcall.member-button.component';
 
+const HOLDOVER_PT_CATEGORY = '유급생 PT';
+
 interface RollCallScheduleListProps {
     members: Member[];
     scheduleParticipants: Record<string, string[]>;
@@ -102,6 +104,30 @@ export function RollCallScheduleList({
             </div>
             <div className="flex flex-col gap-4">
                 {Object.keys(scheduleParticipants).map(category => {
+                    // 유급생 PT: 유급생만 표시 (유급생이 없으면 카드 자체를 숨김)
+                    if (category === HOLDOVER_PT_CATEGORY) {
+                        const holdoverMembers = members.filter(m => m.role === 'holdover');
+                        if (holdoverMembers.length === 0) return null;
+                        const selectedHoldovers = scheduleParticipants[category] || [];
+                        return (
+                            <div key={category} className="p-5 bg-white border border-gray-200 rounded-3xl shadow-sm transition-all">
+                                <div className="flex items-center gap-2 mb-3">
+                                    <h3 className="text-sm font-black text-gray-900">{category}</h3>
+                                    {selectedHoldovers.length > 0 && (
+                                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 border border-blue-100">
+                                            {selectedHoldovers.length}명 참여
+                                        </span>
+                                    )}
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                    {holdoverMembers.map(m => (
+                                        <RollCallMemberButton key={m.name} {...getMemberProps(m, category)} />
+                                    ))}
+                                </div>
+                            </div>
+                        );
+                    }
+
                     const sectionMembers = getDefaultSectionMembers(category);
                     const sectionMemberNames = new Set(sectionMembers.map(m => m.name));
 

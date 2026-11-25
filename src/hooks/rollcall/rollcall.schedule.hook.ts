@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react';
 
+// 표시 순서 = 객체 키 순서 (유급생 PT는 가장 위, HQ PT는 고정 일정 중 가장 아래)
 const INITIAL_SCHEDULE_PARTICIPANTS: Record<string, string[]> = {
-    'HQ PT': [],
+    '유급생 PT': [],
     'KTA 업무지원': [],
     'MEDIC 의무지원': [],
     'BLC 업무지원': [],
-    'PAO 업무지원': []
+    'PAO 업무지원': [],
+    'HQ PT': []
 };
 
 export function useRollCallSchedule(baseDate?: Date) {
@@ -17,11 +19,7 @@ export function useRollCallSchedule(baseDate?: Date) {
     // 날짜가 변경되면 선택된 인원 초기화
     useEffect(() => {
         setScheduleParticipants({
-            'HQ PT': [],
-            'KTA 업무지원': [],
-            'MEDIC 의무지원': [],
-            'BLC 업무지원': [],
-            'PAO 업무지원': []
+            ...INITIAL_SCHEDULE_PARTICIPANTS
         });
         setCustomSchedules(prev => prev.map(s => ({ ...s, participants: [] })));
     }, [baseDate ? `${baseDate.getFullYear()}-${baseDate.getMonth()}-${baseDate.getDate()}` : null]);
