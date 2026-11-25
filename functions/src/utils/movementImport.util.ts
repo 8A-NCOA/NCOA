@@ -21,6 +21,7 @@ export interface ExistingDoc {
     type: string;
     startDate: string;
     endDate: string;
+    reason?: string;
 }
 
 export interface ImportPlan {
@@ -124,4 +125,42 @@ export function planImportFirestore(movements: ImportMovement[], existing: Exist
     });
 
     return { deleteIds: [...deleteIds], adds };
+}
+
+/** 그 날짜가 들어 있는 주기(수~화)의 수요일 'YYYY-MM-DD' */
+export function periodStartOf(iso: string): string {
+    const [y, m, d] = iso.split("-").map(Number);
+    const date = new Date(Date.UTC(y, m - 1, d));
+    const back = (date.getUTCDay() - 3 + 7) % 7;
+    date.setUTCDate(date.getUTCDate() - back);
+    return date.toISOString().slice(0, 10);
+}
+
+/**
+ * 반영 뒤 한 주기에 사유가 다른 외박이 둘 이상 남는 인원 (허용하지 않는다).
+ * 외박은 첫 외박일(시작일)이 들어 있는 주기 것이다. 당직을 피해 나눠 나간 외박은 사유가 같으므로 괜찮다.
+ */
+export function findPassReasonConflicts(existing: ExistingDoc[], plan: ImportPlan): { name: string; message: string }[] {
+    const deleted = new Set(plan.deleteIds);
+    const passes = [
+        ...existing.filter((d) => d.type === "pass" && !deleted.has(d.id)).map((d) => ({ name: cleanName(d.name), startDate: d.startDate, reason: d.reason || "" })),
+        ...plan.adds.filter((a) => a.type === "pass").map((a) => ({ name: String(a.name), startDate: String(a.startDate), reason: String(a.reason || "") })),
+    ];
+    const groups = new Map<string, { name: string; period: string; reasons: Set<string> }>();
+    passes.forEach((p) => {
+        const period = periodStartOf(p.startDate);
+        const key = `${p.name}|${period}`;
+        const g = groups.get(key) || { name: p.name, period, reasons: new Set<string>() };
+        g.reasons.add(p.reason.trim());
+        groups.set(key, g);
+    });
+    return [...groups.values()]
+        .filter((g) => g.reasons.size > 1)
+        .map((g) => {
+            const [, m, d] = g.period.split("-").map(Number);
+            return {
+                name: g.name,
+                message: `${m}/${d}(수) 주기에 사유가 다른 외박이 있습니다 (${[...g.reasons].map((r) => r || "사유 없음").join(" / ")}). 한 주기에는 외박을 한 번만 저장할 수 있습니다.`,
+            };
+        });
 }

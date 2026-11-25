@@ -21,7 +21,31 @@ test('server split matches the app split (same period rules)', () => {
     assert.deepEqual(server.ownPassDocs.map(d => d.id), app.ownPassDocs.map(d => d.id));
     assert.deepEqual(server.ownVacDocs.map(d => d.id), app.ownVacDocs.map(d => d.id));
     assert.equal(server.ownPass?.id, app.ownPass?.id);
-    assert.equal(server.ownVac?.id, app.ownVac?.id);
+});
+
+test('with a chosen vacation, only that vacation is updated; other overlapping vacations are untouched', () => {
+    // prev-vac(11/3~11/12)와 v1(11/16~11/19)이 모두 이번 주기와 겹친다
+    const plan = planMovementWrites(docs, { memberName: '김원범', periodWindow: window, pass, vacation, vacationTargetId: 'v1' });
+    assert.deepEqual(plan.updates.map(u => u.id), ['p1', 'v1']);
+    assert.deepEqual(plan.deletes, ['p-dup']);
+});
+
+test('turning the chosen vacation off deletes only that vacation', () => {
+    const plan = planMovementWrites(docs, { memberName: '김원범', periodWindow: window, pass, vacation: null, vacationTargetId: 'prev-vac' });
+    assert.deepEqual(plan.deletes.sort(), ['p-dup', 'prev-vac']);
+});
+
+test('a new vacation is created without touching overlapping ones, and a retry updates it instead', () => {
+    const newVac = { startDate: '2026-11-13', endDate: '2026-11-13', reason: '연가 1일' };
+    const plan = planMovementWrites(docs, { memberName: '김원범', periodWindow: window, pass, vacation: newVac, vacationTargetId: null });
+    assert.deepEqual(plan.creates, [{ name: '김원범', type: 'vacation', ...newVac }]);
+    assert.ok(!plan.deletes.includes('v1') && !plan.deletes.includes('prev-vac'));
+    const retry = planMovementWrites(
+        [...docs, { id: 'made', type: 'vacation', startDate: newVac.startDate, endDate: newVac.endDate }],
+        { memberName: '김원범', periodWindow: window, pass, vacation: newVac, vacationTargetId: null },
+    );
+    assert.deepEqual(retry.creates, []);
+    assert.ok(retry.updates.some(u => u.id === 'made'));
 });
 
 test('existing period docs are updated, duplicates deleted, other periods untouched', () => {

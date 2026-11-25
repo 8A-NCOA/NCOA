@@ -8,6 +8,8 @@ import {
     isoToMD,
     findRunStartingInWindow,
     withDutyCells,
+    defaultVacationDoc,
+    hasConflictingPassReasons,
 } from '../src/utils/movement/movement.edit-period.ts';
 
 test('duty days chosen as the reduction reason are written as 당직', () => {
@@ -24,33 +26,62 @@ const noDuty = () => false;
 
 const empty: EditedState = { hasPass: false, passStart: '', passEnd: '', hasVacation: false, vacationStart: '', vacationEnd: '' };
 
-test('vacation that started in the previous period is retained, not owned', () => {
+test('every vacation overlapping the period belongs to it, including one that started earlier', () => {
     const docs = [
         { id: 'v-prev', type: 'vacation', startDate: '2026-11-16', endDate: '2026-11-19' },
         { id: 'v-new', type: 'vacation', startDate: '2026-11-21', endDate: '2026-11-26' },
         { id: 'p-new', type: 'pass', startDate: '2026-11-21', endDate: '2026-11-22' },
     ];
-    const split = splitMemberDocs(docs, { coreStart: '2026-11-18', coreEnd: '2026-11-24' });
+    const window = { coreStart: '2026-11-18', coreEnd: '2026-11-24' };
+    const split = splitMemberDocs(docs, window);
     assert.equal(split.ownPass?.id, 'p-new');
-    assert.equal(split.ownVac?.id, 'v-new');
-    assert.deepEqual(split.retainedDocs.map(d => d.id), ['v-prev']);
+    assert.deepEqual(split.ownVacDocs.map(d => d.id), ['v-prev', 'v-new']);
+    assert.deepEqual(split.retainedDocs, []);
+    // 처음 고를 휴가는 주기 안에서 시작하는 것
+    assert.equal(defaultVacationDoc(split.ownVacDocs, window)?.id, 'v-new');
 });
 
-test('vacation linked to this period pass (외휴연계) is owned even if it starts after the core window', () => {
+test('a pass follows its own period even when a linked vacation is in another period (외휴연계)', () => {
     const docs = [
         { id: 'p', type: 'pass', startDate: '2026-11-23', endDate: '2026-11-25' },
         { id: 'v', type: 'vacation', startDate: '2026-11-25', endDate: '2026-11-28' },
     ];
-    const split = splitMemberDocs(docs, { coreStart: '2026-11-18', coreEnd: '2026-11-24' });
-    assert.equal(split.ownVac?.id, 'v');
-    assert.deepEqual(split.retainedDocs, []);
+    const thisPeriod = splitMemberDocs(docs, { coreStart: '2026-11-18', coreEnd: '2026-11-24' });
+    assert.deepEqual(thisPeriod.ownPassDocs.map(d => d.id), ['p']);
+    assert.deepEqual(thisPeriod.ownVacDocs, [], '휴가는 이번 주기와 겹치지 않는다');
+    const nextPeriod = splitMemberDocs(docs, { coreStart: '2026-11-25', coreEnd: '2026-12-01' });
+    assert.deepEqual(nextPeriod.ownPassDocs, []);
+    assert.deepEqual(nextPeriod.ownVacDocs.map(d => d.id), ['v']);
 });
 
-test('next-period vacation is not owned', () => {
+test('a pass after a vacation (휴외연계) stays in its own period; the vacation shows wherever it overlaps', () => {
+    const docs = [
+        { id: 'v', type: 'vacation', startDate: '2026-11-16', endDate: '2026-11-27' },
+        { id: 'p', type: 'pass', startDate: '2026-11-28', endDate: '2026-11-29' },
+    ];
+    const prev = splitMemberDocs(docs, { coreStart: '2026-11-18', coreEnd: '2026-11-24' });
+    assert.deepEqual(prev.ownPassDocs, []);
+    assert.deepEqual(prev.ownVacDocs.map(d => d.id), ['v']);
+    const cur = splitMemberDocs(docs, { coreStart: '2026-11-25', coreEnd: '2026-12-01' });
+    assert.deepEqual(cur.ownPassDocs.map(d => d.id), ['p']);
+    assert.deepEqual(cur.ownVacDocs.map(d => d.id), ['v']);
+});
+
+test("a vacation that does not overlap the period is not this period's", () => {
     const docs = [{ id: 'v-next', type: 'vacation', startDate: '2026-11-26', endDate: '2026-11-28' }];
     const split = splitMemberDocs(docs, { coreStart: '2026-11-18', coreEnd: '2026-11-24' });
-    assert.equal(split.ownVac, null);
+    assert.deepEqual(split.ownVacDocs, []);
     assert.equal(split.retainedDocs.length, 1);
+});
+
+test('two passes with different reasons in one period are flagged; split passes with one reason are not', () => {
+    assert.equal(hasConflictingPassReasons([
+        { type: 'pass', reason: '일반 원데이' }, { type: 'pass', reason: '생일 원데이' },
+    ]), true);
+    assert.equal(hasConflictingPassReasons([
+        { type: 'pass', reason: '토당으로 인한 일반 투데이' }, { type: 'pass', reason: '토당으로 인한 일반 투데이' },
+    ]), false);
+    assert.equal(hasConflictingPassReasons([{ type: 'pass', reason: '일반 투데이' }]), false);
 });
 
 // 화면 1: 11.11~11.20 주차, 외박 11.14~15, 휴가 11.16~19. 휴가를 '없음'으로 바꾸면 11.18, 11.19도 비워야 한다.
@@ -227,7 +258,7 @@ test('a pass split around duty writes each segment and keeps the duty cell', () 
     assert.equal(statuses['11.24'], 'none');
 });
 
-test('split pass records in one period are all owned, and a vacation linked to the last one too', () => {
+test('split pass records in one period are all owned, and an overlapping vacation too', () => {
     const window = { coreStart: '2026-11-18', coreEnd: '2026-11-24' };
     const docs = [
         { id: 'a', type: 'pass', startDate: '2026-11-20', endDate: '2026-11-20' },
@@ -236,5 +267,12 @@ test('split pass records in one period are all owned, and a vacation linked to t
     ];
     const split = splitMemberDocs(docs, window);
     assert.deepEqual(split.ownPassDocs.map(d => d.id), ['a', 'b']);
-    assert.equal(split.ownVac?.id, 'v');
+    assert.deepEqual(split.ownVacDocs.map(d => d.id), ['v']);
+});
+
+test('the editor only takes vacations that overlap the visible dates of the period', () => {
+    const docs = [{ id: 'v', type: 'vacation', startDate: '2026-11-16', endDate: '2026-11-19' }];
+    const window = { coreStart: '2026-11-18', coreEnd: '2026-11-24' };
+    assert.deepEqual(splitMemberDocs(docs, window, { coreStart: '2026-11-20', coreEnd: '2026-11-24' }).ownVacDocs, []);
+    assert.deepEqual(splitMemberDocs(docs, window).ownVacDocs.map(d => d.id), ['v']);
 });

@@ -295,88 +295,66 @@ export function formatMDToISO(dateStr: string, baseYear: number, referenceMonth?
 }
 
 /**
+ * 화면 타임라인(시트 주차)에서 주기(수~화, 7일)를 구한다.
+ * 시트 주차가 수요일에 시작하지 않는 경우(예: 11.20(금)~11.27(금))가 있으므로 타임라인 앞 7일을 쓰지 않고,
+ * 타임라인의 첫 토요일이 들어 있는 수~화를 주기로 본다. 토요일이 없으면 첫 날짜가 들어 있는 수~화.
+ * coreMDs에는 타임라인에 없는 날짜도 들어 있다 (예: 11.18, 11.19).
+ */
+export function getCoreWindow(timeline: string[], currentYear: number): {
+    coreStartIso: string;
+    coreEndIso: string;
+    coreMDs: string[];
+    /** 주기 중 카드(타임라인)에 보이는 날짜 범위. 휴가는 이 범위와 겹칠 때만 보인다. */
+    visibleStartIso: string;
+    visibleEndIso: string;
+} {
+    if (!timeline || timeline.length === 0) return { coreStartIso: '', coreEndIso: '', coreMDs: [], visibleStartIso: '', visibleEndIso: '' };
+    const refMonth = parseInt(timeline[0].split('.')[0], 10);
+    const isoDates = timeline.map(md => formatMDToISO(md, currentYear, refMonth));
+    const toDate = (iso: string) => { const [y, m, d] = iso.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d)); };
+    const toIso = (date: Date) => date.toISOString().slice(0, 10);
+    const saturday = isoDates.find(iso => toDate(iso).getUTCDay() === 6);
+    const anchorDate = toDate(saturday || isoDates[0]);
+    const start = new Date(anchorDate);
+    start.setUTCDate(start.getUTCDate() - ((anchorDate.getUTCDay() - 3 + 7) % 7));
+    const coreMDs: string[] = [];
+    for (let i = 0; i < 7; i++) {
+        const d = new Date(start);
+        d.setUTCDate(d.getUTCDate() + i);
+        coreMDs.push(`${d.getUTCMonth() + 1}.${d.getUTCDate()}`);
+    }
+    const end = new Date(start);
+    end.setUTCDate(end.getUTCDate() + 6);
+    const coreStartIso = toIso(start);
+    const coreEndIso = toIso(end);
+    const visibleStartIso = isoDates[0] > coreStartIso ? isoDates[0] : coreStartIso;
+    const visibleEndIso = isoDates[isoDates.length - 1] < coreEndIso ? isoDates[isoDates.length - 1] : coreEndIso;
+    return { coreStartIso, coreEndIso, coreMDs, visibleStartIso, visibleEndIso };
+}
+
+/**
  * Checks if a pass or stay movement falls within the period's core window:
  * "수요일부터 다음주 화요일 사이에 있는 외박"
  * Core window: timeline[0] (수요일) ~ timeline[6] (다음주 화요일)
  */
 export function isPassInPeriod(mov: MovementRecord, coreStartIso: string, coreEndIso: string): boolean {
     if (mov.type !== 'pass' && mov.type !== 'stay') return false;
-    // The pass belongs to this week if its start date is within the core window [Wed, Tue],
-    // or overlaps the core window without having started in the previous week.
+    // 첫 외박일(시작일)이 주기(수~화) 안에 있으면 그 주기 외박이다. 휴가와 이어졌는지는 보지 않는다.
     return mov.startDate >= coreStartIso && mov.startDate <= coreEndIso;
 }
 
 /**
- * Checks if a vacation is linked to a pass (외휴연계 or 휴외연계).
- */
-export function isVacationLinkedToPass(
-    vacation: MovementRecord,
-    pass: MovementRecord,
-    dayStatuses?: Record<string, string>
-): boolean {
-    if (vacation.type !== 'vacation' || (pass.type !== 'pass' && pass.type !== 'stay')) return false;
-
-    // 1. 외휴연계 (Pass -> Vacation): pass end is vacation start (or next day)
-    const pEndObj = new Date(pass.endDate);
-    const dayAfterPEnd = new Date(pEndObj);
-    dayAfterPEnd.setDate(pEndObj.getDate() + 1);
-    const dayAfterPEndIso = `${dayAfterPEnd.getFullYear()}-${String(dayAfterPEnd.getMonth() + 1).padStart(2, '0')}-${String(dayAfterPEnd.getDate()).padStart(2, '0')}`;
-
-    if (vacation.startDate === pass.endDate || vacation.startDate === dayAfterPEndIso) {
-        return true;
-    }
-
-    // 2. 휴외연계 (Vacation -> Pass): vacation end is pass departure or pass start
-    const pStartObj = new Date(pass.startDate);
-    const dayBeforePStart = new Date(pStartObj);
-    dayBeforePStart.setDate(pStartObj.getDate() - 1);
-    const dayBeforePStartIso = `${dayBeforePStart.getFullYear()}-${String(dayBeforePStart.getMonth() + 1).padStart(2, '0')}-${String(dayBeforePStart.getDate()).padStart(2, '0')}`;
-
-    if (vacation.endDate === dayBeforePStartIso || vacation.endDate === pass.startDate) {
-        return true;
-    }
-
-    // 3. Reason text / day status hints
-    const vReason = vacation.reason || '';
-    if (/외휴연계|휴외연계/.test(vReason)) {
-        const vStart = new Date(vacation.startDate).getTime();
-        const vEnd = new Date(vacation.endDate).getTime();
-        const pStart = new Date(pass.startDate).getTime();
-        const pEnd = new Date(pass.endDate).getTime();
-        const diff1 = Math.abs(vStart - pEnd) / (1000 * 60 * 60 * 24);
-        const diff2 = Math.abs(pStart - vEnd) / (1000 * 60 * 60 * 24);
-        if (diff1 <= 2 || diff2 <= 2) return true;
-    }
-
-    if (dayStatuses) {
-        const [, vm, vd] = vacation.startDate.split('-').map(Number);
-        if (dayStatuses[`${vm}.${vd}`] === 'linked') {
-            const vStart = new Date(vacation.startDate).getTime();
-            const pEnd = new Date(pass.endDate).getTime();
-            if (Math.abs(vStart - pEnd) / (1000 * 60 * 60 * 24) <= 2) return true;
-        }
-        const [, em, ed] = vacation.endDate.split('-').map(Number);
-        if (dayStatuses[`${em}.${ed}`] === 'vacation-pass-depart') {
-            const vEnd = new Date(vacation.endDate).getTime();
-            const pStart = new Date(pass.startDate).getTime();
-            if (Math.abs(pStart - vEnd) / (1000 * 60 * 60 * 24) <= 2) return true;
-        }
-    }
-
-    return false;
-}
-
-/**
- * Filter movements corresponding to a 10-day period (수요일 ~ 다음주 금요일):
- * 1. 수요일부터 다음주 화요일 사이에 있는 외박과 그와 연계되는 휴가
- * 2. 외휴연계 혹은 휴외연계되지 않는 기간 내 휴가
+ * 이번 주기(수~화)의 외박과 휴가 (외특 탭 카드·툴팁):
+ * 1. 외박(잔류): 첫 외박일이 주기 안에 있는 것
+ * 2. 휴가: 주기 중 카드에 보이는 날짜와 하루라도 겹치는 것 (긴 휴가는 여러 주기에 반복해서 보인다. 기간은 자르지 않는다)
+ * 규칙은 편집 화면과 같다 (utils/movement/movement.edit-period.ts).
  */
 export function getPeriodMovementsForMember(
     cleanName: string,
     timeline: string[],
     currentYear: number,
     allMovements: MovementRecord[],
-    dayStatuses?: Record<string, string>
+    _dayStatuses?: Record<string, string>
 ): {
     thisPeriodPass: MovementRecord | null;
     thisPeriodVacation: MovementRecord | null;
@@ -387,55 +365,18 @@ export function getPeriodMovementsForMember(
         return { thisPeriodPass: null, thisPeriodVacation: null, allPeriodMovements: [] };
     }
 
-    const refMonth = parseInt(timeline[0].split('.')[0], 10);
-    const periodStartIso = formatMDToISO(timeline[0], currentYear, refMonth);
-    const periodEndIso = formatMDToISO(timeline[timeline.length - 1], currentYear, refMonth);
+    const { coreStartIso, coreEndIso, visibleStartIso, visibleEndIso } = getCoreWindow(timeline, currentYear);
 
-    const coreTimeline = timeline.slice(0, 7); // Wed ~ Tue (7 days)
-    const coreStartIso = formatMDToISO(coreTimeline[0], currentYear, refMonth);
-    const coreEndIso = formatMDToISO(coreTimeline[coreTimeline.length - 1], currentYear, refMonth);
+    const periodPasses = memberMovements
+        .filter(m => isPassInPeriod(m, coreStartIso, coreEndIso))
+        .sort((a, b) => a.startDate.localeCompare(b.startDate));
+    const thisPeriodPass: MovementRecord | null = periodPasses[0] || null;
 
-    // 1. Pass in this period: "수요일부터 다음주 화요일 사이에 있는 외박"
-    const periodPasses = memberMovements.filter(m => isPassInPeriod(m, coreStartIso, coreEndIso));
-    let thisPeriodPass: MovementRecord | null = null;
-    if (periodPasses.length > 0) {
-        thisPeriodPass = periodPasses.find(p => p.startDate >= coreStartIso && p.startDate <= coreEndIso) || periodPasses[0];
-    }
-
-    // 2. Vacation in this period:
-    // - Either linked to thisPeriodPass (외휴연계 or 휴외연계)
-    // - OR independent vacation within the period (not linked to ANY pass)
-    const memberPasses = memberMovements.filter(m => m.type === 'pass' || m.type === 'stay');
-    const memberVacations = memberMovements.filter(m => m.type === 'vacation');
-
-    const periodVacations: MovementRecord[] = [];
-    memberVacations.forEach(vac => {
-        // Check if linked to a pass of this period (나눠 나간 외박이면 어느 구간이든)
-        if (periodPasses.some(p => isVacationLinkedToPass(vac, p, dayStatuses))) {
-            periodVacations.push(vac);
-            return;
-        }
-
-        // Check if linked to another pass of this member (e.g. next week or previous week pass)
-        const linkedOtherPass = memberPasses.find(p =>
-            !periodPasses.includes(p) && isVacationLinkedToPass(vac, p, dayStatuses)
-        );
-        if (linkedOtherPass) {
-            // It belongs to that other pass's period, so do NOT include here
-            return;
-        }
-
-        // Unlinked vacation ("외휴연계 혹은 휴외연계되지 않는 기간 내 휴가")
-        // Check if it falls within the displayed period (Wednesday ~ next Friday)
-        if (vac.startDate <= periodEndIso && vac.endDate >= periodStartIso) {
-            periodVacations.push(vac);
-        }
-    });
-
-    const thisPeriodVacation = periodVacations.find(v => {
-        if (thisPeriodPass && isVacationLinkedToPass(v, thisPeriodPass, dayStatuses)) return true;
-        return v.startDate >= periodStartIso && v.startDate <= periodEndIso;
-    }) || periodVacations[0] || null;
+    const periodVacations = memberMovements
+        // 카드에 보이는 이번 기간 날짜와 겹치는 휴가만 (시트에 칸이 없는 날짜에만 걸친 휴가는 보이지 않는다)
+        .filter(m => m.type === 'vacation' && m.startDate <= visibleEndIso && m.endDate >= visibleStartIso)
+        .sort((a, b) => a.startDate.localeCompare(b.startDate));
+    const thisPeriodVacation = periodVacations.find(v => v.startDate >= coreStartIso) || periodVacations[0] || null;
 
     const allPeriodMovements: MovementRecord[] = [];
     if (thisPeriodPass) allPeriodMovements.push(thisPeriodPass);

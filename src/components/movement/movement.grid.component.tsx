@@ -3,7 +3,7 @@ import { History, Pencil } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { calculateRank } from '../../lib/rankUtils';
 import type { MovementRecord } from '../../types/movement/movement.type';
-import { extractPureMemberName, getPeriodMovementsForMember, applyDutySchedulesToDataList } from '../../utils/movement.utils';
+import { extractPureMemberName, getPeriodMovementsForMember, applyDutySchedulesToDataList, getCoreWindow } from '../../utils/movement.utils';
 import {
     compareTableOrder,
     getTableSectionInfo,
@@ -130,7 +130,8 @@ export function MovementGrid({ timeline, dataList, dbMembers, baseDate, movement
 
                 if (!timeline || timeline.length === 0) return null;
 
-                const coreTimeline = timeline.slice(0, 7);
+                // 주기(수~화). 시트 주차가 수요일에 시작하지 않아도 요일로 구한다.
+                const coreTimeline = getCoreWindow(timeline, currentYear).coreMDs;
                 const coreIsoDates = coreTimeline.map(dateStr => {
                     const [m, d] = dateStr.split('.').map(Number);
                     return `${currentYear}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;

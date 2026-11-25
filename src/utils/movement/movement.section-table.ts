@@ -1,5 +1,5 @@
 /**
- * 패스지 'Table'의 섹션별 보기 (BLC / KTA / HQ).
+ * 섹션 패스지: 패스지 'Table'의 섹션별 보기 (BLC / KTA / HQ).
  * 메모 형식 표(Rank Name | Date approved | Reason)를 외박(PASS)과 휴가(LEAVE)로 나눠 만든다.
  *
  * 외부 의존성이 없는 순수 함수만 둔다 (tests/movement.section-table.test.ts).
@@ -69,12 +69,6 @@ function daysBetween(startIso: string, endIso: string): number {
     return Math.round((e - s) / 86400000) + 1;
 }
 
-function addDays(iso: string, days: number): string {
-    const d = new Date(`${iso}T00:00:00Z`);
-    d.setUTCDate(d.getUTCDate() + days);
-    return d.toISOString().slice(0, 10);
-}
-
 /** 'KANG GUNN' → 'Kang, Gunn' / 'Park Yu Chan' → 'Park, Yu Chan'. 영문 이름이 없으면 한글 이름 (자리 이름 '신병'은 비움) */
 export function formatMemoName(member: SectionTableMember): string {
     const english = (member.englishName || '').trim();
@@ -102,31 +96,48 @@ function dayPassWord(days: number): string {
     return `${NUMBER_WORDS[days] || days} Day Pass`;
 }
 
+/** 섹션 패스지에 쓰는 공식 당직 휴일 이름 */
+export interface MemoHolidayNames {
+    /** 이번 기간과 겹치는 공식 당직 휴일 */
+    current: string[];
+    /** 공식 당직 휴일 전체 (지난 휴일 포함) */
+    all: string[];
+}
+
+const sameName = (a: string, b: string) =>
+    a.replace(/[’‘]/g, "'").replace(/\s+/g, ' ').trim().toLowerCase() === b.replace(/[’‘]/g, "'").replace(/\s+/g, ' ').trim().toLowerCase();
+
 /**
  * 외박 사유를 메모의 영문 Reason으로 바꾼다.
  * - '일반 투데이' → 'Weekend Pass'
- * - "Veteran's Day 컴펜 포데이" → "Veteran's Day Compensation"
- * - 'KTA/RSO 01-27기 수료 포데이' → 'RSO 01-27 Four Day Pass' (기수가 들어간 사유)
  * - '생일 원데이' → 'Birthday Pass'
- * - 그 밖의 사유(휴일 이름, Staff Duty 등) → "Veteran's Day Compensation"
+ * - 공식 당직 휴일:
+ *   - 이번 기간 휴일 → 'Thanksgiving Day Four Day Pass'
+ *   - 지난 휴일(또는 '컴펜'을 붙인 휴일) → "Veteran's Day Compensation"
+ * - 그 밖의 사유(수료, DBIDS, Staff Duty 등)는 Compensation을 붙이지 않는다:
+ *   'KTA/RSO 01-27기 수료 포데이' → 'RSO 01-27 Four Day Pass', 'Staff Duty 원데이' → 'Staff Duty One Day Pass'
  */
-export function toMemoPassReason(reason: string | undefined, days: number): string {
+export function toMemoPassReason(reason: string | undefined, days: number, holidays: MemoHolidayNames = { current: [], all: [] }): string {
     const base = reasonBase(reason || '');
     if (!base || base === '일반') return 'Weekend Pass';
     if (base === '생일' || /^birthday$/i.test(base)) return 'Birthday Pass';
-    const hasBatch = /\d{1,2}-\d{1,2}/.test(base);
-    if (!hasBatch || /컴펜|compensation/i.test(base)) {
-        const name = base.replace(/컴펜|compensation/gi, '').replace(/(\d{1,2}-\d{1,2})\s*기/g, '$1').replace(/\s+/g, ' ').trim();
-        return name ? `${name} Compensation` : 'Compensation';
+
+    const hasComp = /컴펜|compensation/i.test(base);
+    const withoutComp = base.replace(/컴펜|compensation/gi, '').replace(/\s+/g, ' ').trim();
+    const holiday = [...holidays.current, ...holidays.all].find(h => h && sameName(h, withoutComp));
+    if (holiday) {
+        const isCurrent = holidays.current.some(h => sameName(h, withoutComp));
+        return isCurrent && !hasComp ? `${withoutComp} ${dayPassWord(days)}` : `${withoutComp} Compensation`;
     }
-    const name = base
+
+    const name = withoutComp
         .replace(/\s*수료\s*/g, ' ')
         .replace(/(\d{1,2}-\d{1,2})\s*기/g, '$1')
         .replace(/^KTA\/(RSO|PAO)\b/i, '$1')
         .replace(/^BLC\/S-?\d\b/i, 'BLC')
         .replace(/\s+/g, ' ')
         .trim();
-    return `${name} ${dayPassWord(days)}`;
+    return name ? `${name} ${dayPassWord(days)}` : dayPassWord(days);
 }
 
 /** 휴가는 사유와 상관없이 모두 'ROKA Leave' */
@@ -149,7 +160,8 @@ function compareMembers(a: SectionTableMember, b: SectionTableMember): number {
 /**
  * 이번 기간(수~화)의 섹션별 외박/휴가 행.
  * - 외박: 시작일(첫 외박일)이 이번 기간 안인 기록. 같은 사유로 나눠 나간 외박은 한 줄에 '20 November, 23 November'로 묶는다.
- * - 휴가: 시작일이 이번 기간 안이거나, 이번 기간 외박의 마지막 날·다음 날에 시작하는 기록(외휴연계).
+ * - 휴가: 이번 주기 중 화면에 보이는 날짜(leaveStartIso~leaveEndIso, 없으면 주기 전체)와 하루라도 겹치는 기록.
+ *   기간은 자르지 않고 전체를 쓴다 (긴 휴가는 여러 주기에 반복해서 나온다).
  * - 정렬: 입대일 → 계급 → 이름.
  */
 export function buildSectionTableRows(
@@ -157,7 +169,11 @@ export function buildSectionTableRows(
     movements: SectionTableMovement[],
     filter: SectionTableFilter,
     coreStartIso: string,
-    coreEndIso: string
+    coreEndIso: string,
+    leaveStartIso: string = coreStartIso,
+    leaveEndIso: string = coreEndIso,
+    /** 공식 당직 휴일 이름 (이번 기간 휴일은 'N Day Pass', 지난 휴일은 Compensation) */
+    holidays: MemoHolidayNames = { current: [], all: [] }
 ): SectionTableResult {
     const inCore = (iso: string) => !!iso && iso >= coreStartIso && iso <= coreEndIso;
     const pass: SectionTableRow[] = [];
@@ -171,9 +187,8 @@ export function buildSectionTableRows(
             const passes = own
                 .filter(mov => mov.type === 'pass' && inCore(mov.startDate))
                 .sort((a, b) => a.startDate.localeCompare(b.startDate));
-            const passEnds = new Set(passes.flatMap(p => [p.endDate, addDays(p.endDate, 1)]));
             const leaves = own
-                .filter(mov => mov.type === 'vacation' && (inCore(mov.startDate) || passEnds.has(mov.startDate)))
+                .filter(mov => mov.type === 'vacation' && mov.startDate <= leaveEndIso && mov.endDate >= leaveStartIso)
                 .sort((a, b) => a.startDate.localeCompare(b.startDate));
 
             const nameStr = formatMemoName(member);
@@ -190,7 +205,7 @@ export function buildSectionTableRows(
                 pass.push({
                     rankName,
                     dateApproved: group.map(p => formatMemoRange(p.startDate, p.endDate)).join(', '),
-                    reason: toMemoPassReason(group[0].reason, days),
+                    reason: toMemoPassReason(group[0].reason, days, holidays),
                 });
             });
 
@@ -207,7 +222,7 @@ export function buildSectionTableRows(
 }
 
 const FONT = "font-family: Arial, 'Malgun Gothic', '맑은 고딕', sans-serif;";
-const CELL = `border: 1px solid #000; padding: 0 0.1cm; text-align: center; font-weight: normal; ${FONT}`;
+const CELL = `border: 1px solid #000; padding: 0 0.05cm; text-align: center; white-space: nowrap; font-weight: normal; ${FONT}`;
 
 function escapeHtml(s: string): string {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -215,16 +230,16 @@ function escapeHtml(s: string): string {
 
 function tableHtml(title: string, rows: SectionTableRow[]): string {
     let html = `<div style="${FONT} font-size: 12pt; font-weight: bold; margin: 0 0 0.1cm 0;">${title}</div>`;
-    html += `<table style="border-collapse: collapse; ${FONT} font-size: 12pt; width: 16.5cm; text-align: center;">`;
+    html += `<table style="border-collapse: collapse; ${FONT} font-size: 12pt; width: 16.5cm; min-width: 16.5cm; text-align: center;">`;
     html += `<thead><tr>`;
-    html += `<td style="${CELL} width: 4.5cm;">Rank Name</td>`;
-    html += `<td style="${CELL} width: 6cm;">Date approved</td>`;
-    html += `<td style="${CELL} width: 6cm;">Reason</td>`;
+    html += `<td style="${CELL} width: 4.1cm;">Rank Name</td>`;
+    html += `<td style="${CELL} width: 5.7cm;">Date approved</td>`;
+    html += `<td style="${CELL} width: 6.7cm;">Reason</td>`;
     html += `</tr></thead><tbody>`;
     rows.forEach(r => {
         html += `<tr>`;
         html += `<td style="${CELL}">${escapeHtml(r.rankName)}</td>`;
-        html += `<td style="${CELL} white-space: nowrap;">${escapeHtml(r.dateApproved)}</td>`;
+        html += `<td style="${CELL}">${escapeHtml(r.dateApproved)}</td>`;
         html += `<td style="${CELL}">${escapeHtml(r.reason)}</td>`;
         html += `</tr>`;
     });

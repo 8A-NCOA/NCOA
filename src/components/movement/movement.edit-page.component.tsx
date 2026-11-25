@@ -5,7 +5,7 @@ import axios from 'axios';
 import { movementSaveQueue, SHEET_FUNCTIONS_BASE, type PassRecordInput, type VacationRecordInput } from '../../utils/movement/movement.save-runner';
 import { cn } from '../../lib/utils';
 import type { MovementRecord } from '../../types/movement/movement.type';
-import { formatMDToISO, extractPureMemberName } from '../../utils/movement.utils';
+import { formatMDToISO, extractPureMemberName, getCoreWindow } from '../../utils/movement.utils';
 import { useMovementSettings } from '../../hooks/movement/useMovementSettings';
 import {
     getMemberSectionKeys,
@@ -49,6 +49,8 @@ import {
 } from '../../utils/movement/movement.edit-validation';
 import {
     splitMemberDocs,
+    defaultVacationDoc,
+    hasConflictingPassReasons,
     findRun,
     findRunStartingInWindow,
     eachIsoDate,
@@ -907,13 +909,17 @@ interface MovementSectionProps {
     footer?: ReactNode;
     /** 켜짐/꺼짐과 관계없이 항상 보여 줄 안내 (예: 다른 기간 휴가) */
     note?: ReactNode;
+    /** 제목 아래, 입력 칸 위에 항상 보이는 선택 (예: 이 기간에 겹치는 휴가 고르기) */
+    selector?: ReactNode;
+    /** 꺼져 있을 때 안내 (없으면 '이번 주 … 없음') */
+    offText?: string;
 }
 
 function MovementSection({
     title, accent, enabled, onToggle,
     startField, endField, reasonField, startLabel, endLabel,
     start, end, days, daysSuffix, reasonChoice, reasonPreview, onRangeChange, minGapDays, defaultMonthIso, periodRange, onReasonChoiceChange,
-    options, detail = null, holidayOptions, customPlaceholder, issues, footer, note, afterRange
+    options, detail = null, holidayOptions, customPlaceholder, issues, footer, note, afterRange, selector, offText
 }: MovementSectionProps) {
     const sectionIssues = issues.filter(i => i.fields.some(f => f === startField || f === endField || f === reasonField));
     const tone = issueTone(sectionIssues);
@@ -954,6 +960,7 @@ function MovementSection({
                     </span>
                 </button>
             </div>
+            {selector && <div className="px-4 sm:px-5 pt-3.5">{selector}</div>}
 
             {enabled ? (
                 <div className="px-4 sm:px-5 py-4 space-y-5">
@@ -987,10 +994,39 @@ function MovementSection({
                     {footer}
                 </div>
             ) : (
-                <p className="px-4 sm:px-5 py-4 text-sm text-gray-400">이번 주 {title} 없음</p>
+                <p className="px-4 sm:px-5 py-4 text-sm text-gray-400">{offText || `이번 주 ${title} 없음`}</p>
             )}
             {note && <div className="px-4 sm:px-5 pb-4">{note}</div>}
         </section>
+    );
+}
+
+/** 이 기간과 겹치는 휴가 중 고칠 것 고르기 (+ 새 휴가) */
+function VacationPicker({ candidates, selectedId, onSelect, coreStartIso }: {
+    candidates: MovementRecord[];
+    selectedId: string | null;
+    onSelect: (id: string | null) => void;
+    coreStartIso: string;
+}) {
+    const chip = (active: boolean) => cn(
+        'px-3 h-9 rounded-xl text-xs font-bold border transition-colors whitespace-nowrap',
+        active ? 'bg-orange-500 border-orange-500 text-white' : 'bg-white border-gray-200 text-gray-600 hover:bg-orange-50'
+    );
+    return (
+        <div className="space-y-1.5">
+            <p className="text-[11px] font-bold text-gray-500">고칠 휴가</p>
+            <div className="flex flex-wrap gap-1.5">
+                {candidates.map(v => (
+                    <button key={v.id} type="button" onClick={() => onSelect(v.id || null)} className={chip(!!v.id && selectedId === v.id)}>
+                        {formatIsoShort(v.startDate)}~{formatIsoShort(v.endDate)}
+                        {v.startDate < coreStartIso ? ' · 이전 기간에 시작' : ''}
+                    </button>
+                ))}
+                <button type="button" onClick={() => onSelect(null)} className={cn(chip(selectedId === null), 'border-dashed')}>
+                    + 새 휴가
+                </button>
+            </div>
+        </div>
     );
 }
 
@@ -1083,9 +1119,8 @@ export function MovementEditPage({
     }, []);
 
     const refMonth = parseInt((timeline[0] || '1.1').split('.')[0], 10);
-    const coreTimeline = useMemo(() => timeline.slice(0, 7), [timeline]); // Wed ~ Tue (7 days)
-    const coreStartIso = formatMDToISO(coreTimeline[0] || '1.1', currentYear, refMonth);
-    const coreEndIso = formatMDToISO(coreTimeline[coreTimeline.length - 1] || '1.1', currentYear, refMonth);
+    // 주기(수~화): 시트 주차가 수요일에 시작하지 않아도 요일로 구한다
+    const { coreStartIso, coreEndIso, visibleStartIso, visibleEndIso } = useMemo(() => getCoreWindow(timeline, currentYear), [timeline, currentYear]);
     const periodStartIso = formatMDToISO(timeline[0] || '1.1', currentYear, refMonth);
     const periodEndIso = formatMDToISO(timeline[timeline.length - 1] || '1.1', currentYear, refMonth);
 
@@ -1125,7 +1160,9 @@ export function MovementEditPage({
     // 이번 기간이 가진 기록: DB 기록 우선, 없으면 핵심 구간(수~화) 안에서 시작하는 잔디 구간으로 추정.
     // 이전 기간에 시작해 이어지는 휴가나 다음 기간 휴가는 여기서 편집하지 않는다.
     const memberDocs = movements.filter(m => m.name === cleanName);
-    const split = splitMemberDocs(memberDocs, periodWindow);
+    // 휴가는 이번 기간 중 화면에 보이는 날짜와 겹치는 것만 여기서 고친다
+    const vacationWindow = useMemo(() => ({ coreStart: visibleStartIso, coreEnd: visibleEndIso }), [visibleStartIso, visibleEndIso]);
+    const split = splitMemberDocs(memberDocs, periodWindow, vacationWindow);
     // 당직을 피해 나눠 나간 외박(이번 기간 외박 기록 2개 이상)은 첫 시작~마지막 끝을 한 범위로 열고 나누기를 켠다
     const savedPassDocs = split.ownPassDocs.filter(d => d.type === 'pass');
     const savedSplit = savedPassDocs.length > 1;
@@ -1134,9 +1171,24 @@ export function MovementEditPage({
         : split.ownPass
         ? { start: split.ownPass.startDate, end: split.ownPass.endDate }
         : findRunStartingInWindow(periodWindow, isPassStatus);
-    const ownVacRange: DateRange | null = split.ownVac
-        ? { start: split.ownVac.startDate, end: split.ownVac.endDate }
-        : findRunStartingInWindow(periodWindow, isVacStatus);
+    // 휴가: 이번 주기와 겹치는 휴가는 모두 여기서 고칠 수 있다. 한 번에 하나를 골라 고친다.
+    // DB 기록이 없으면 주기와 겹치는 시트 잔디 휴가를 새 휴가로 연다.
+    const vacationCandidates = split.ownVacDocs;
+    const sheetOnlyVacRun: DateRange | null = vacationCandidates.length === 0
+        ? (() => {
+            const day = eachIsoDate(visibleStartIso, visibleEndIso).find(isVacStatus);
+            return day ? findRun(day, isVacStatus) : null;
+        })()
+        : null;
+    const [selectedVacId, setSelectedVacId] = useState<string | null>(() => defaultVacationDoc(vacationCandidates, vacationWindow)?.id ?? null);
+    const selectedVacDoc = vacationCandidates.find(d => d.id === selectedVacId) || null;
+    const ownVacRange: DateRange | null = selectedVacDoc
+        ? { start: selectedVacDoc.startDate, end: selectedVacDoc.endDate }
+        : sheetOnlyVacRun;
+    // 고르지 않은 휴가는 이번 저장에서 그대로 둔다 (다른 기록처럼)
+    const retainedDocs = [...split.retainedDocs, ...vacationCandidates.filter(d => d !== selectedVacDoc)];
+    // 한 주기에 사유가 다른 외박이 둘 이상 저장돼 있으면 (허용하지 않음) 안내한다
+    const conflictingPassReasons = hasConflictingPassReasons(split.ownPassDocs);
 
     // 편집 전 이번 기간 기록이 차지하던 날 (외박 출발일 포함). 시트 잔디가 DB보다 길게 남아 있으면 그 부분도 포함.
     const ownedDateSet = new Set<string>();
@@ -1150,15 +1202,16 @@ export function MovementEditPage({
     }
     if (ownVacRange) {
         addRange(ownVacRange);
+        // 시트 잔디가 DB보다 길게 남은 부분도 이 휴가 것 (같은 날 시작하는 잔디 구간만)
         const run = findRun(ownVacRange.start, isVacStatus);
-        if (run && run.start >= periodWindow.coreStart) addRange(run);
+        if (run && run.start === ownVacRange.start) addRange(run);
     }
     const ownedOriginalDates = [...ownedDateSet].sort();
 
     // 다른 기간 기록 (그대로 둔다). DB에 없이 시트 잔디에만 있는 다른 기간 휴가도 포함.
     const toRange = (d: MovementRecord): DateRange => ({ start: d.startDate, end: d.endDate });
-    const retainedVacations: DateRange[] = split.retainedDocs.filter(d => d.type === 'vacation').map(toRange);
-    const retainedPasses: DateRange[] = split.retainedDocs.filter(d => d.type === 'pass' || d.type === 'stay').map(toRange);
+    const retainedVacations: DateRange[] = retainedDocs.filter(d => d.type === 'vacation').map(toRange);
+    const retainedPasses: DateRange[] = retainedDocs.filter(d => d.type === 'pass' || d.type === 'stay').map(toRange);
     timelineIso.forEach(({ iso }) => {
         if (!isVacStatus(iso) || ownedDateSet.has(iso)) return;
         if (retainedVacations.some(v => inRange(iso, v))) return;
@@ -1166,8 +1219,10 @@ export function MovementEditPage({
         // DB 기록과 겹치는 시트 잔디(같은 휴가가 DB와 조금 다르게 남은 것)는 따로 세지 않는다
         if (run && !retainedVacations.some(v => v.start <= run.end && run.start <= v.end)) retainedVacations.push(run);
     });
+    // 화면에는 보이지만 이번 주기와 겹치지 않는 휴가 (다음 주기 수~금에 시작하는 휴가). 겹치는 휴가는 위에서 골라 고친다.
     const otherPeriodVacations = retainedVacations
         .filter(v => v.start <= periodEndIso && v.end >= periodStartIso)
+        .filter(v => !(v.start <= visibleEndIso && v.end >= visibleStartIso))
         .sort((a, b) => a.start.localeCompare(b.start));
 
     // 사유 버튼
@@ -1250,8 +1305,24 @@ export function MovementEditPage({
     const [vacationStart, setVacationStart] = useState<string>(ownVacRange?.start || '');
     const [vacationEnd, setVacationEnd] = useState<string>(ownVacRange?.end || '');
     const [vacationChoice, setVacationChoice] = useState<ReasonChoice>(() =>
-        choiceFromReason(stripLinkTag(split.ownVac?.reason || ''), vacationOptions)
+        choiceFromReason(stripLinkTag(selectedVacDoc?.reason || ''), vacationOptions)
     );
+    // 고칠 휴가를 바꾸면 입력 칸을 그 휴가 값으로 다시 채운다 (고치던 값은 버린다)
+    const selectVacation = (id: string | null) => {
+        if (id === selectedVacId) return;
+        const current = selectedVacDoc;
+        const dirty = vacationOn !== !!current
+            || vacationStart !== (current?.startDate || '')
+            || vacationEnd !== (current?.endDate || '')
+            || vacationReason !== (current ? stripLinkTag(current.reason || '').trim() : '');
+        if (dirty && !window.confirm('고치던 휴가 내용이 사라집니다. 다른 휴가로 바꿀까요?')) return;
+        const next = vacationCandidates.find(d => d.id === id) || null;
+        setSelectedVacId(id);
+        setVacationOn(!!next);
+        setVacationStart(next?.startDate || '');
+        setVacationEnd(next?.endDate || '');
+        setVacationChoice(choiceFromReason(stripLinkTag(next?.reason || ''), vacationOptions));
+    };
 
     // 스위치가 곧 외박·휴가 유무다. 켰는데 날짜·사유가 비어 있으면 저장 시 입력 오류로 막는다.
     const hasPass = passOn;
@@ -1401,9 +1472,9 @@ export function MovementEditPage({
     const runValidation = (): EditIssue[] => {
         // 이번 저장으로 바뀌지 않는 다른 기간 기록과 겹치는지 본다 (시트에만 있는 다른 기간 휴가 포함)
         const otherMovements: ExistingMovement[] = [
-            ...split.retainedDocs,
+            ...retainedDocs,
             ...retainedVacations
-                .filter(v => !split.retainedDocs.some(d => d.type === 'vacation' && d.startDate <= v.end && v.start <= d.endDate))
+                .filter(v => !retainedDocs.some(d => d.type === 'vacation' && d.startDate <= v.end && v.start <= d.endDate))
                 .map(v => ({ type: 'vacation' as const, startDate: v.start, endDate: v.end }))
         ];
 
@@ -1507,13 +1578,14 @@ export function MovementEditPage({
             pass: passRecord,
             ...(splitRecords ? { passes: splitRecords } : {}),
             vacation: vacationRecord,
+            vacationTargetId: selectedVacDoc?.id ?? null,
             sheet: { dayStatuses, cellUpdates },
             ...(pendingRecruitId ? { memberId: pendingRecruitId, deferSheet: true } : {})
         });
 
         // 화면에는 바로 반영한다
         const savedMovement: any = vacationRecord ? {
-            id: split.ownVac?.id || `vac-${Date.now()}`,
+            id: selectedVacDoc?.id || `vac-${Date.now()}`,
             name: cleanName,
             type: 'vacation',
             ...vacationRecord,
@@ -1668,9 +1740,18 @@ export function MovementEditPage({
                                     customPlaceholder="외박 일수 감소 사유 입력 (예: 사정)"
                                 />
                             ) : undefined}
-                            note={passAutoNote ? (
-                                <div className="rounded-xl border border-dashed border-blue-200 bg-blue-50/60 px-3 py-2.5 text-xs font-semibold text-blue-800">
-                                    {passAutoNote}
+                            note={passAutoNote || conflictingPassReasons ? (
+                                <div className="space-y-2">
+                                    {conflictingPassReasons && (
+                                        <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-xs font-semibold text-red-700">
+                                            이 기간에 사유가 다른 외박이 {split.ownPassDocs.filter(d => d.type === 'pass').length}개 저장돼 있습니다. 한 기간에는 외박을 한 번만(당직을 피해 나눠 나가는 경우는 같은 사유로) 저장할 수 있으니, 저장하면 하나의 사유로 합쳐집니다.
+                                        </div>
+                                    )}
+                                    {passAutoNote && (
+                                        <div className="rounded-xl border border-dashed border-blue-200 bg-blue-50/60 px-3 py-2.5 text-xs font-semibold text-blue-800">
+                                            {passAutoNote}
+                                        </div>
+                                    )}
                                 </div>
                             ) : undefined}
                         />
@@ -1680,6 +1761,17 @@ export function MovementEditPage({
                             accent="orange"
                             enabled={vacationOn}
                             onToggle={setVacationOn}
+                            offText={vacationCandidates.length === 0 ? undefined
+                                : selectedVacDoc ? '저장하면 고른 휴가 기록을 지웁니다.'
+                                : '새 휴가를 넣으려면 스위치를 켜세요.'}
+                            selector={vacationCandidates.length > 0 ? (
+                                <VacationPicker
+                                    candidates={vacationCandidates}
+                                    selectedId={selectedVacId}
+                                    onSelect={selectVacation}
+                                    coreStartIso={coreStartIso}
+                                />
+                            ) : undefined}
                             startField="vacationStart"
                             endField="vacationEnd"
                             reasonField="vacationReason"
@@ -1715,8 +1807,7 @@ export function MovementEditPage({
                                                 {formatIsoShort(v.start)}~{formatIsoShort(v.end)} 휴가
                                             </span>
                                             {' · '}
-                                            {v.start < coreStartIso ? '이전 기간에 시작한 휴가' : '다음 기간에 시작하는 휴가'}
-                                            라서 여기서는 바꾸지 않습니다.
+                                            다음 기간에 시작하는 휴가라서 여기서는 바꾸지 않습니다.
                                         </p>
                                     ))}
                                 </div>

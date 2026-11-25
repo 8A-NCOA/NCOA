@@ -3,7 +3,7 @@ import * as logger from "firebase-functions/logger";
 import { FieldValue, type DocumentReference } from "firebase-admin/firestore";
 import { db } from "../config/firebase.config";
 import { syncMovements } from "./sheetSync.service";
-import { planImportFirestore, type ImportMovement, type ExistingDoc } from "../utils/movementImport.util";
+import { planImportFirestore, findPassReasonConflicts, type ImportMovement, type ExistingDoc } from "../utils/movementImport.util";
 import { explainError } from "../utils/jobError.util";
 
 /** 실패하면 이만큼 기다렸다가 다시 시도한다 (그 뒤에도 실패하면 'failed') */
@@ -34,14 +34,20 @@ async function claim(ref: DocumentReference): Promise<MovementImportJobData | nu
     });
 }
 
-/** Firestore 기록: 겹치는 기존 기록 삭제 + 새 기록 추가를 한 번의 일괄 쓰기로 (중간에 실패해도 반쪽이 남지 않는다) */
-async function writeFirestore(job: MovementImportJobData) {
+/** 요청에 나오는 인원의 기존 출타 기록 */
+async function loadExisting(job: MovementImportJobData): Promise<ExistingDoc[]> {
     const names = [...new Set(job.movements.map((m) => (m.name || "").replace(/^(병장|상병|일병|이병)\s*/, "")))];
     const existing: ExistingDoc[] = [];
     for (let i = 0; i < names.length; i += 30) {
         const snap = await db.collection("movements").where("name", "in", names.slice(i, i + 30)).get();
         snap.docs.forEach((d) => existing.push({ id: d.id, ...(d.data() as any) }));
     }
+    return existing;
+}
+
+/** Firestore 기록: 겹치는 기존 기록 삭제 + 새 기록 추가를 한 번의 일괄 쓰기로 (중간에 실패해도 반쪽이 남지 않는다) */
+async function writeFirestore(job: MovementImportJobData) {
+    const existing = await loadExisting(job);
     const plan = planImportFirestore(job.movements, existing, job.anchorIso || job.year || new Date().getFullYear());
     const batch = db.batch();
     plan.deleteIds.forEach((id) => batch.delete(db.collection("movements").doc(id)));
@@ -59,6 +65,20 @@ export async function processMovementImportJob(ref: DocumentReference) {
 
     for (let round = 0; ; round++) {
         try {
+            if (!done.sheet && round === 0) {
+                // 한 주기에 사유가 다른 외박이 둘 이상 남게 되면 아무것도 쓰지 않고 검토 화면에 경고로 알린다
+                const existing = await loadExisting(job);
+                const plan = planImportFirestore(job.movements, existing, job.anchorIso || job.year || new Date().getFullYear());
+                const conflicts = findPassReasonConflicts(existing, plan);
+                if (conflicts.length > 0) {
+                    await ref.update({
+                        status: "warning",
+                        warnings: conflicts,
+                        lastError: "한 주기에 사유가 다른 외박이 둘 이상 있습니다. 엑셀이나 기존 기록을 고친 뒤 다시 반영해 주세요.",
+                    });
+                    return;
+                }
+            }
             if (!done.sheet) {
                 const res: any = await syncMovements(job.movements as any[]);
                 if (res.status === "ambiguous") {

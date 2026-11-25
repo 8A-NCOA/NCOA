@@ -3,7 +3,7 @@ import React, { useState, useMemo } from 'react';
 import { ChevronLeft, ChevronRight, Copy, AlertTriangle } from 'lucide-react';
 import { MovementGrid } from './movement.grid.component';
 import { MovementPreviewModal } from './movement.preview-modal.component';
-import { extractDayCountFromText, applyDutySchedulesToDataList, extractPureMemberName, formatMDToISO } from '../../utils/movement.utils';
+import { extractDayCountFromText, applyDutySchedulesToDataList, extractPureMemberName, getCoreWindow } from '../../utils/movement.utils';
 import { calculateRank, compareMembersByHobong } from '../../lib/rankUtils';
 import { isDateDuringKtaPeriod, isDateDuringBlcPeriod } from '../../utils/duty/dutyAutoDistribute';
 import { useMovementSettings } from '../../hooks/movement/useMovementSettings';
@@ -39,6 +39,8 @@ export function MovementSheetView({
 
     const currentWeek = sheetWeeks[currentWeekIndex];
     const timeline = currentWeek ? (currentWeek.timeline || []) : [];
+    // 주기(수~화): 시트 주차가 수요일에 시작하지 않아도(예: 11.20(금)~11.27(금)) 요일로 구한다
+    const coreWindow = getCoreWindow(timeline, baseDate ? baseDate.getFullYear() : new Date().getFullYear());
 
     // 저장된 당직자 목록(dutySchedules)을 실시간으로 읽어와 현재 주차 타임라인에 디스플레이 (시트에는 쓰지 않음)
     const displayDataList = useMemo(() => {
@@ -57,10 +59,7 @@ export function MovementSheetView({
 
         // 신병은 전입일이 들어 있는 주(수~화)부터 보여 준다 — 전입 전 주차에는 카드·패스지에서 뺀다.
         // 같은 이름으로 정리되는 인원이 여럿이면(예: 이름 없는 신병 둘) 가장 이른 전입일 기준.
-        const refMonth = parseInt((timeline[0] || '1.1').split('.')[0], 10);
-        const year = baseDate ? baseDate.getFullYear() : new Date().getFullYear();
-        const coreEndMD = timeline[Math.min(6, timeline.length - 1)];
-        const coreEndIso = coreEndMD ? formatMDToISO(coreEndMD, year, refMonth) : '';
+        const coreEndIso = coreWindow.coreEndIso;
         const joinDateByName = new Map<string, string>();
         dbMembers.forEach((m: any) => {
             const key = extractPureMemberName(m.name);
@@ -490,7 +489,7 @@ export function MovementSheetView({
         memberObj: any,
         allowedStatuses: string[],
         bridgeStatuses: string[] = [],
-        searchTimeline: string[] = timeline.slice(0, 7)
+        searchTimeline: string[] = coreWindow.coreMDs
     ) => {
         const combinedAllowed = [...allowedStatuses, ...bridgeStatuses];
         const activeDates = searchTimeline.filter((dateStr: string) => {
@@ -612,7 +611,7 @@ export function MovementSheetView({
             const memberMovements = movements.filter(mov => mov.name === cleanName);
 
             // 1. Check Pass blocks (bridged by duty/recovery across consecutive pass days)
-            const coreTimeline = timeline.slice(0, 7);
+            const coreTimeline = coreWindow.coreMDs;
             const passBlocks = getWeekendBlocks(member, ['pass', 'pass-depart', 'recovery-pass-depart', 'vacation-pass-depart', 'linked'], ['duty', 'recovery']);
             if (passBlocks.length > 0) {
                 const processedMovIds = new Set<string>();
@@ -727,10 +726,8 @@ export function MovementSheetView({
             // 카드는 모든 인원을 보여 주지만, 패스지는 이번 주 잔디가 하나라도 있는 인원만 쓴다
             // (출타·당직·회복이 없는 인원이 '잔류'로 들어가지 않게 — 이전과 같은 결과)
             // 잔류는 외박 잔디가 없으므로 잔디가 없어도 이번 기간에 잔류 기록이 있는 인원은 포함한다 (출타 특이사항의 잔류 목록)
-            const copyYear = baseDate ? baseDate.getFullYear() : new Date().getFullYear();
-            const copyRefMonth = parseInt((timeline[0] || '1.1').split('.')[0], 10);
-            const copyStartIso = formatMDToISO(timeline[0] || '1.1', copyYear, copyRefMonth);
-            const copyEndIso = formatMDToISO(timeline[Math.min(6, timeline.length - 1)] || '1.1', copyYear, copyRefMonth);
+            const copyStartIso = coreWindow.coreStartIso;
+            const copyEndIso = coreWindow.coreEndIso;
             const stayNames = new Set(
                 movements
                     .filter((m: any) => m.type === 'stay' && m.startDate <= copyEndIso && m.endDate >= copyStartIso)
@@ -785,7 +782,7 @@ export function MovementSheetView({
                 const { mainSec, subSec } = getTableSectionInfo(dbMember?.sections);
 
                 const memberMovements = movements.filter(mov => mov.name === cleanName);
-                const coreTimeline = timeline.slice(0, 7); // Wed ~ Tue
+                const coreTimeline = coreWindow.coreMDs; // Wed ~ Tue
                 const remarksList: string[] = [];
                 // Group pass dates that share the same reason / context for clean Remarks (e.g. 2 DAY PASS (9.4, 9.7) or 1 DAY PASS (9.4), 1 DAY PASS (9.7))
                 const passSegments: { dates: Date[]; reason: string }[] = [];
@@ -969,9 +966,17 @@ export function MovementSheetView({
                         sections: m.sections,
                     };
                 });
+            // 공식 당직 휴일: 이번 기간 휴일을 쓴 외박은 'Thanksgiving Day Four Day Pass', 지난 휴일은 Compensation
+            const officialHolidays = dutySchedules.filter((s: any) => s.type === 'holiday' && s.holidayType === 'duty' && s.startDate && (s.memo || '').trim());
+            const memoHolidays = {
+                current: officialHolidays
+                    .filter((s: any) => s.startDate <= copyEndIso && (s.endDate || s.startDate) >= copyStartIso)
+                    .map((s: any) => s.memo.trim() as string),
+                all: officialHolidays.map((s: any) => s.memo.trim() as string),
+            };
             const sectionTables = Object.fromEntries(SECTION_TABLE_FILTERS.map(filter => [
                 filter,
-                renderSectionTable(buildSectionTableRows(sectionMembers, movements, filter, copyStartIso, copyEndIso)),
+                renderSectionTable(buildSectionTableRows(sectionMembers, movements, filter, copyStartIso, copyEndIso, coreWindow.visibleStartIso, coreWindow.visibleEndIso, memoHolidays)),
             ])) as Record<SectionTableFilter, { html: string; text: string }>;
 
             const allRemarksDates: Date[] = [];
@@ -1004,7 +1009,7 @@ export function MovementSheetView({
             };
 
             const yearVal = baseDate ? baseDate.getFullYear() : new Date().getFullYear();
-            const coreTimeline = timeline.slice(0, 7);
+            const coreTimeline = coreWindow.coreMDs;
             const coreIsoDates = coreTimeline.map((dateStr: string) => {
                 const [m, d] = dateStr.split('.').map(Number);
                 return `${yearVal}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
@@ -1213,7 +1218,8 @@ export function MovementSheetView({
 
                 // 1. Process PASS blocks
                 const passBlocks = getWeekendBlocks(member, ['pass', 'pass-depart', 'recovery-pass-depart', 'vacation-pass-depart', 'linked']);
-                const vacationBlocks = getWeekendBlocks(member, ['vacation', 'linked', 'vacation-pass-depart'], [], timeline);
+                // 휴가는 이번 주기(수~화)와 겹치는 것만 (기간은 아래에서 앞뒤 주차까지 이어 전체를 구한다)
+                const vacationBlocks = getWeekendBlocks(member, ['vacation', 'linked', 'vacation-pass-depart']);
 
                 if (passBlocks.length > 0) {
                     const memberPassItems: { dateRangeKo: string; mov: any }[] = [];

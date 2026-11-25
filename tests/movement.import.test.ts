@@ -64,3 +64,29 @@ test('a stay weekend spanning New Year (12/31~1/1) is ordered correctly', () => 
     const plan = planImportFirestore([{ name: '병장 김철수', type: '잔류', stayStart: '12.31', stayEnd: '1.1' }], [], '2026-12-31');
     assert.deepEqual([plan.adds[0].startDate, plan.adds[0].endDate], ['2026-12-31', '2027-01-01']);
 });
+
+test('periodStartOf gives the Wednesday that starts the period', async () => {
+    const { periodStartOf } = await import('../functions/src/utils/movementImport.util.ts');
+    assert.equal(periodStartOf('2026-11-25'), '2026-11-25'); // 수
+    assert.equal(periodStartOf('2026-11-28'), '2026-11-25'); // 토
+    assert.equal(periodStartOf('2026-12-01'), '2026-11-25'); // 화
+    assert.equal(periodStartOf('2026-12-02'), '2026-12-02'); // 다음 수
+});
+
+test('import is blocked when one period would have passes with different reasons', async () => {
+    const { findPassReasonConflicts } = await import('../functions/src/utils/movementImport.util.ts');
+    const existing = [{ id: 'wed', name: '김원범', type: 'pass', startDate: '2026-11-25', endDate: '2026-11-25', reason: '생일 원데이' }];
+    // 주말 외박을 새로 넣는다 (수요일 외박과 겹치지 않아 지워지지 않는다)
+    const plan = { deleteIds: [], adds: [{ name: '김원범', type: 'pass', startDate: '2026-11-28', endDate: '2026-11-29', reason: '일반 투데이' }] };
+    const conflicts = findPassReasonConflicts(existing, plan);
+    assert.equal(conflicts.length, 1);
+    assert.equal(conflicts[0].name, '김원범');
+    assert.match(conflicts[0].message, /11\/25\(수\) 주기/);
+
+    // 나눠 나간 외박(같은 사유)은 괜찮다
+    const split = { deleteIds: ['wed'], adds: [
+        { name: '김원범', type: 'pass', startDate: '2026-11-27', endDate: '2026-11-27', reason: '토당으로 인한 일반 투데이' },
+        { name: '김원범', type: 'pass', startDate: '2026-11-29', endDate: '2026-11-29', reason: '토당으로 인한 일반 투데이' },
+    ] };
+    assert.deepEqual(findPassReasonConflicts(existing, split), []);
+});

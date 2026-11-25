@@ -168,6 +168,12 @@ export function MovementPreviewModal({
                     </div>
                 )}
 
+                {activeTab === 'table' && tableFilter !== 'ALL' && (
+                    <div className="shrink-0 -mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">
+                        저장된 외특 내용으로 자동 작성한 참고용입니다. 메모에 맞게 확인·수정하여 사용하세요.
+                    </div>
+                )}
+
                 {/* Content Area - MS Word Web App Document Layout */}
                 <div className="flex-1 border border-gray-200 rounded-2xl bg-white overflow-auto p-4 sm:p-6 flex justify-center">
                     <div 

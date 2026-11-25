@@ -39,6 +39,8 @@ export interface SaveJobInput {
     /** 당직을 피해 나눠 나가는 외박 구간들 (같은 사유). 있으면 서버가 pass 대신 쓴다 */
     passes?: PassRecordInput[];
     vacation: VacationRecordInput | null;
+    /** 편집 화면이 고른 휴가 기록 id (null이면 새 휴가). 서버는 이 휴가 하나만 고치거나 지운다 */
+    vacationTargetId: string | null;
     sheet: { dayStatuses: Record<string, string>; cellUpdates: Record<string, string> };
     /** 시트에 행이 아직 없는 신병의 인원 id (deferSheet와 함께) */
     memberId?: string;

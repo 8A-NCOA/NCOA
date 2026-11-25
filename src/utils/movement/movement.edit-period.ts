@@ -2,10 +2,10 @@
  * 주간 출타 편집에서 "이번 기간이 가진 기록"을 정하고, 잔디 상태와 시트 셀 값을 계산하는 순수 함수.
  * (tests/movement.edit-period.test.ts)
  *
- * 기간 규칙
- * - 외박: 시작일이 이번 기간 핵심 구간(수~화, 7일) 안에 있으면 이번 기간 것.
- * - 휴가: 시작일이 핵심 구간 안에 있거나, 이번 기간 외박의 복귀일(또는 다음 날)에 출발하면(외휴연계) 이번 기간 것.
- * - 그 밖의 휴가(이전 기간에 시작해 이어지는 휴가, 다음 기간에 시작하는 휴가)는 이번 화면에서 바꾸거나 지우지 않는다.
+ * 주기 규칙 (외특 탭 카드, 편집 화면, 저장 서버, 패스지 섹션별 보기가 함께 쓴다)
+ * - 외박(잔류): 첫 외박일(시작일)이 주기(수~화, 7일) 안에 있으면 그 주기 것. 휴가와 이어졌는지는 보지 않는다.
+ * - 휴가: 주기 중 카드에 보이는 날짜와 하루라도 겹치면 그 주기에 휴가 전체를 보여 주고, 그 주기 편집 화면에서 고칠 수 있다.
+ *   (긴 휴가는 여러 주기에 반복해서 보인다. 주기에 맞춰 자르지 않는다.)
  *
  * 날짜는 'YYYY-MM-DD', 시트/잔디 키는 'M.D'.
  */
@@ -55,13 +55,14 @@ export function isPassToVacationLink(pass: DateRange, vac: DateRange): boolean {
     return vac.start === pass.end || vac.start === addDaysIso(pass.end, 1);
 }
 
-export function vacationBelongsToPeriod(vac: DateRange, window: PeriodWindow, periodPass: DateRange | null): boolean {
-    if (periodPass && isPassToVacationLink(periodPass, vac)) return true;
-    return vac.start >= window.coreStart && vac.start <= window.coreEnd;
-}
-
+/** 외박(잔류)은 첫 외박일이 주기 안에 있으면 그 주기 것 */
 export function passBelongsToPeriod(pass: DateRange, window: PeriodWindow): boolean {
     return pass.start >= window.coreStart && pass.start <= window.coreEnd;
+}
+
+/** 휴가는 주기와 하루라도 겹치면 그 주기에 보인다 */
+export function vacationOverlapsPeriod(vac: DateRange, window: PeriodWindow): boolean {
+    return vac.start <= window.coreEnd && vac.end >= window.coreStart;
 }
 
 export interface MovementDocLike {
@@ -71,33 +72,34 @@ export interface MovementDocLike {
 }
 
 /**
- * 대상자의 기록을 이번 기간이 가진 것(편집·저장 시 덮어쓰거나 지움)과 다른 기간 것(그대로 둠)으로 나눈다.
- * 휴가 소속은 편집 전 외박을 기준으로 정한다 — 외박 날짜를 옮겨도 다른 기간 휴가가 끌려오지 않는다.
+ * 대상자의 기록을 이번 주기 것(외박·잔류 + 겹치는 휴가)과 나머지(그대로 둠)로 나눈다.
+ * 휴가는 겹치는 것이 여러 개일 수 있다 (편집 화면은 그중 하나를 골라 고친다).
+ * vacationWindow: 휴가를 볼 범위 (주기 중 화면에 보이는 날짜). 없으면 주기 전체.
  */
-export function splitMemberDocs<T extends MovementDocLike>(docs: T[], window: PeriodWindow) {
+export function splitMemberDocs<T extends MovementDocLike>(docs: T[], window: PeriodWindow, vacationWindow: PeriodWindow = window) {
     const ownPassDocs = docs
         .filter(d => (d.type === 'pass' || d.type === 'stay') && passBelongsToPeriod({ start: d.startDate, end: d.endDate }, window))
         .sort((a, b) => a.startDate.localeCompare(b.startDate));
     const ownPass = ownPassDocs[0] || null;
-    // 나눠 나간 외박이면 어느 구간에 이어진 휴가든 이번 기간 것
-    const ownPassRanges = ownPassDocs.map(d => ({ start: d.startDate, end: d.endDate }));
-    const linkedToOwnPass = (v: DateRange) => ownPassRanges.some(r => isPassToVacationLink(r, v));
-
     const ownVacDocs = docs
-        .filter(d => {
-            if (d.type !== 'vacation') return false;
-            const v = { start: d.startDate, end: d.endDate };
-            return linkedToOwnPass(v) || vacationBelongsToPeriod(v, window, null);
-        })
+        .filter(d => d.type === 'vacation' && vacationOverlapsPeriod({ start: d.startDate, end: d.endDate }, vacationWindow))
         .sort((a, b) => a.startDate.localeCompare(b.startDate));
-    const ownVac = ownVacDocs.find(v => linkedToOwnPass({ start: v.startDate, end: v.endDate }))
-        || ownVacDocs[0]
-        || null;
 
     const owned = new Set<T>([...ownPassDocs, ...ownVacDocs]);
     const retainedDocs = docs.filter(d => !owned.has(d));
 
-    return { ownPass, ownPassDocs, ownVac, ownVacDocs, retainedDocs };
+    return { ownPass, ownPassDocs, ownVacDocs, retainedDocs };
+}
+
+/** 편집 화면이 처음 고를 휴가: 주기 안에서 시작하는 것, 없으면 가장 이른 것 */
+export function defaultVacationDoc<T extends MovementDocLike>(vacDocs: T[], window: PeriodWindow): T | null {
+    return vacDocs.find(v => v.startDate >= window.coreStart && v.startDate <= window.coreEnd) || vacDocs[0] || null;
+}
+
+/** 외박 기록이 둘 이상인데 사유가 서로 다르면 true (한 주기에 사유 다른 외박 두 번은 허용하지 않는다) */
+export function hasConflictingPassReasons(passDocs: { type: string; reason?: string }[]): boolean {
+    const reasons = new Set(passDocs.filter(d => d.type === 'pass').map(d => (d.reason || '').trim()));
+    return reasons.size > 1;
 }
 
 /**
