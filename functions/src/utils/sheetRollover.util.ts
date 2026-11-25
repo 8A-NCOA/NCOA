@@ -126,6 +126,11 @@ export function planRollover(
         dates: [], weekdays: [], cells: [], addColumns: 0, clearedCount: 0,
     };
     if (dates.length === 0) return { ...empty, reason: "1행에 날짜가 없습니다." };
+    // 이어지는 날짜 뒤에 다른 값이 있으면(날짜 오타, 건너뛴 날짜 등) 그 뒤 칸을 잃을 수 있으므로 손대지 않는다
+    const trailing = row1.slice(dates.length).findIndex((v) => v !== "" && v !== null && v !== undefined);
+    if (trailing !== -1) {
+        return { ...empty, reason: `1행 날짜가 ${dates[dates.length - 1]} 다음 칸에서 하루씩 이어지지 않습니다. 날짜를 고친 뒤 다시 실행하세요.` };
+    }
     const todayIdx = dates.indexOf(todayIso);
     if (todayIdx === -1) return { ...empty, reason: `오늘(${todayIso})이 시트 날짜(${dates[0]}~${dates[dates.length - 1]})에 없습니다.` };
     const lastIso = dates[dates.length - 1];

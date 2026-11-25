@@ -39,7 +39,9 @@ export const rolloverMovementSheet = onSchedule(
                     },
                 });
                 if (!written) {
-                    logger.info(`sheet rollover (${mode}): skipped`, { reason: plan.reason });
+                    // 마지막 주가 아니라서 넘어간 것은 평소 일이고, 그 밖의 이유(날짜가 끊김, 오늘이 시트에 없음)는 확인이 필요하다
+                    const routine = plan.reason.startsWith("아직");
+                    (routine ? logger.info : logger.warn)(`sheet rollover (${mode}): skipped`, { reason: plan.reason });
                     continue;
                 }
                 await refreshSpreadsheetUpdatedAt(mode);

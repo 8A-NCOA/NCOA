@@ -110,3 +110,12 @@ test('existing extra columns are filled with dates instead of being left empty',
     assert.equal(plan.dates[44], '2027-01-11');
     assert.equal(plan.addColumns, 0);
 });
+
+test('a broken date in row 1 stops the rollover instead of overwriting the columns after it', () => {
+    const row1 = [...row1Of('2026-11-01', 20), isoToSerial('2026-11-25'), ...row1Of('2026-11-22', 10)];
+    const plan = planRollover(row1, [['외박']], 32, '2026-11-18', { force: true });
+    assert.equal(plan.apply, false);
+    assert.match(plan.reason, /이어지지 않습니다/);
+    // 뒤쪽이 빈 칸이면 괜찮다
+    assert.equal(planRollover([...row1Of('2026-11-01', 20), '', ''], [['외박']], 23, '2026-11-18', { force: true }).apply, true);
+});
