@@ -4,6 +4,7 @@ import { ChevronLeft, ChevronRight, Copy, AlertTriangle } from 'lucide-react';
 import { MovementGrid } from './movement.grid.component';
 import { MovementPreviewModal } from './movement.preview-modal.component';
 import { extractDayCountFromText, applyDutySchedulesToDataList, extractPureMemberName, getCoreWindow } from '../../utils/movement.utils';
+import { createMdYearResolver, timelineStartYear } from '../../utils/movement/movement.year';
 import { calculateRank, compareMembersByHobong } from '../../lib/rankUtils';
 import { isDateDuringKtaPeriod, isDateDuringBlcPeriod } from '../../utils/duty/dutyAutoDistribute';
 import { useMovementSettings } from '../../hooks/movement/useMovementSettings';
@@ -39,8 +40,10 @@ export function MovementSheetView({
 
     const currentWeek = sheetWeeks[currentWeekIndex];
     const timeline = currentWeek ? (currentWeek.timeline || []) : [];
+    // 'M.D' 의 연도: 타임라인 첫 날짜를 기준일에서 가장 가까운 해로 잡고 이어서 정한다 (해를 넘는 주차 대응)
+    const yearOf = createMdYearResolver(timeline, baseDate);
     // 주기(수~화): 시트 주차가 수요일에 시작하지 않아도(예: 11.20(금)~11.27(금)) 요일로 구한다
-    const coreWindow = getCoreWindow(timeline, baseDate ? baseDate.getFullYear() : new Date().getFullYear());
+    const coreWindow = getCoreWindow(timeline, timelineStartYear(timeline, baseDate));
 
     // 저장된 당직자 목록(dutySchedules)을 실시간으로 읽어와 현재 주차 타임라인에 디스플레이 (시트에는 쓰지 않음)
     const displayDataList = useMemo(() => {
@@ -497,12 +500,11 @@ export function MovementSheetView({
             return combinedAllowed.includes(status);
         });
 
-        const yearVal = baseDate ? baseDate.getFullYear() : new Date().getFullYear();
         const blocks: Date[][] = [];
         let currentBlock: Date[] = [];
         activeDates.forEach((dateStr: string) => {
             const [m, d] = dateStr.split('.').map(Number);
-            const dateObj = new Date(yearVal, m - 1, d, 12, 0, 0, 0);
+            const dateObj = new Date(yearOf(m, d), m - 1, d, 12, 0, 0, 0);
             if (currentBlock.length === 0) {
                 currentBlock.push(dateObj);
             } else {
@@ -539,7 +541,6 @@ export function MovementSheetView({
     // Helper to find overlapping movement with eligible reason
     const findMatchingMovement = (memberMovements: any[], block: Date[], expectedType: 'pass' | 'vacation', allowGeneral: boolean = false) => {
         if (block.length === 0) return null;
-        const yearVal = baseDate ? baseDate.getFullYear() : new Date().getFullYear();
         const startD = block[0];
         const endD = block[block.length - 1];
 
@@ -548,8 +549,8 @@ export function MovementSheetView({
         const endM = endD.getMonth() + 1;
         const endDay = endD.getDate();
 
-        const blockStartIso = `${yearVal}-${String(startM).padStart(2, '0')}-${String(startDay).padStart(2, '0')}`;
-        const blockEndIso = `${yearVal}-${String(endM).padStart(2, '0')}-${String(endDay).padStart(2, '0')}`;
+        const blockStartIso = `${yearOf(startM, startDay)}-${String(startM).padStart(2, '0')}-${String(startDay).padStart(2, '0')}`;
+        const blockEndIso = `${yearOf(endM, endDay)}-${String(endM).padStart(2, '0')}-${String(endDay).padStart(2, '0')}`;
 
         const matches = memberMovements.filter(mov => {
             if (mov.type !== expectedType) return false;
@@ -593,11 +594,10 @@ export function MovementSheetView({
 
     const overlapsTimeline = (mov: any, timelineList: string[]) => {
         if (!mov || !timelineList || timelineList.length === 0) return false;
-        const yearVal = baseDate ? baseDate.getFullYear() : new Date().getFullYear();
         const [firstM, firstD] = timelineList[0].split('.').map(Number);
         const [lastM, lastD] = timelineList[timelineList.length - 1].split('.').map(Number);
-        const tStartIso = `${yearVal}-${String(firstM).padStart(2, '0')}-${String(firstD).padStart(2, '0')}`;
-        const tEndIso = `${yearVal}-${String(lastM).padStart(2, '0')}-${String(lastD).padStart(2, '0')}`;
+        const tStartIso = `${yearOf(firstM, firstD)}-${String(firstM).padStart(2, '0')}-${String(firstD).padStart(2, '0')}`;
+        const tEndIso = `${yearOf(lastM, lastD)}-${String(lastM).padStart(2, '0')}-${String(lastD).padStart(2, '0')}`;
         return mov.startDate <= tEndIso && mov.endDate >= tStartIso;
     };
 
@@ -693,11 +693,10 @@ export function MovementSheetView({
                         }
 
                         // 2) Sheet table cells (잔디 칸수) vs Reason text / Expected days in timeline
-                        const yearVal = baseDate ? baseDate.getFullYear() : new Date().getFullYear();
                         const [firstM, firstD] = timeline[0].split('.').map(Number);
                         const [lastM, lastD] = timeline[timeline.length - 1].split('.').map(Number);
-                        const tStartDate = new Date(yearVal, firstM - 1, firstD, 12, 0, 0, 0);
-                        const tEndDate = new Date(yearVal, lastM - 1, lastD, 12, 0, 0, 0);
+                        const tStartDate = new Date(yearOf(firstM, firstD), firstM - 1, firstD, 12, 0, 0, 0);
+                        const tEndDate = new Date(yearOf(lastM, lastD), lastM - 1, lastD, 12, 0, 0, 0);
 
                         const overlapStart = movStart > tStartDate ? movStart : tStartDate;
                         const overlapEnd = movEnd < tEndDate ? movEnd : tEndDate;
@@ -1008,15 +1007,14 @@ export function MovementSheetView({
                 }
             };
 
-            const yearVal = baseDate ? baseDate.getFullYear() : new Date().getFullYear();
             const coreTimeline = coreWindow.coreMDs;
             const coreIsoDates = coreTimeline.map((dateStr: string) => {
                 const [m, d] = dateStr.split('.').map(Number);
-                return `${yearVal}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+                return `${yearOf(m, d)}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
             });
             const timelineIsoDates = timeline.map((dateStr: string) => {
                 const [m, d] = dateStr.split('.').map(Number);
-                return `${yearVal}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+                return `${yearOf(m, d)}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
             });
             const weekStartIso = coreIsoDates[0] || '';
             const weekEndIso = coreIsoDates[coreIsoDates.length - 1] || '';
@@ -1072,9 +1070,9 @@ export function MovementSheetView({
                 // 당직 연휴가 없거나 3일 미만인 경우: 주말(토, 일)이 공식 휴일 (일반 투데이)
                 coreTimeline.forEach((dateStr: string) => {
                     const [m, d] = dateStr.split('.').map(Number);
-                    const dt = new Date(yearVal, m - 1, d);
+                    const dt = new Date(yearOf(m, d), m - 1, d);
                     if (dt.getDay() === 0 || dt.getDay() === 6) { // 토(6), 일(0)
-                        const iso = `${yearVal}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+                        const iso = `${yearOf(m, d)}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
                         officialHolidayIsoDates.push(iso);
                     }
                 });
@@ -1631,8 +1629,8 @@ export function MovementSheetView({
                     if (matchedTimelineDates.length > 0) {
                         const [firstM, firstD] = matchedTimelineDates[0].split('.').map(Number);
                         const [lastM, lastD] = matchedTimelineDates[matchedTimelineDates.length - 1].split('.').map(Number);
-                        let sObj = new Date(yearVal, firstM - 1, firstD, 12, 0, 0, 0);
-                        let eObj = new Date(yearVal, lastM - 1, lastD, 12, 0, 0, 0);
+                        let sObj = new Date(yearOf(firstM, firstD), firstM - 1, firstD, 12, 0, 0, 0);
+                        let eObj = new Date(yearOf(lastM, lastD), lastM - 1, lastD, 12, 0, 0, 0);
 
                         if (matchedTimelineDates[0] === timeline[0]) {
                             let prevD = new Date(sObj);

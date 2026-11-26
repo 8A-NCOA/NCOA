@@ -6,6 +6,7 @@ import { movementSaveQueue, SHEET_FUNCTIONS_BASE, type PassRecordInput, type Vac
 import { cn } from '../../lib/utils';
 import type { MovementRecord } from '../../types/movement/movement.type';
 import { formatMDToISO, extractPureMemberName, getCoreWindow } from '../../utils/movement.utils';
+import { createMdYearResolver, timelineStartYear } from '../../utils/movement/movement.year';
 import { useMovementSettings } from '../../hooks/movement/useMovementSettings';
 import {
     getMemberSectionKeys,
@@ -1030,7 +1031,7 @@ function VacationPicker({ candidates, selectedId, onSelect, coreStartIso }: {
     );
 }
 
-function GrassPreview({ timeline, dayStatuses, currentYear }: { timeline: string[]; dayStatuses: Record<string, string>; currentYear: number }) {
+function GrassPreview({ timeline, dayStatuses, yearOf }: { timeline: string[]; dayStatuses: Record<string, string>; yearOf: (m: number, d: number) => number }) {
     return (
         <section className="bg-white border border-gray-200 rounded-2xl shadow-sm p-4 space-y-3">
             <div className="flex items-center justify-between">
@@ -1041,7 +1042,7 @@ function GrassPreview({ timeline, dayStatuses, currentYear }: { timeline: string
                 {timeline.map((dateStr) => {
                     const status = dayStatuses[dateStr] || 'none';
                     const [m, d] = dateStr.split('.').map(Number);
-                    const dateObj = new Date(currentYear, m - 1, d, 12, 0, 0, 0);
+                    const dateObj = new Date(yearOf(m, d), m - 1, d, 12, 0, 0, 0);
                     const isWeekend = dateObj.getDay() % 6 === 0;
                     const isSunday = dateObj.getDay() === 0;
 
@@ -1106,7 +1107,9 @@ export function MovementEditPage({
     onSaveSuccess
 }: MovementEditPageProps) {
     const { allowVacationPassLink } = useMovementSettings();
-    const currentYear = baseDate ? baseDate.getFullYear() : new Date().getFullYear();
+    // 'M.D' 의 연도: 타임라인 첫 날짜를 기준일에서 가장 가까운 해로 잡는다 (1월에 12월 주차를 편집해도 맞는 해)
+    const yearOf = useMemo(() => createMdYearResolver(timeline, baseDate), [timeline, baseDate]);
+    const currentYear = timelineStartYear(timeline, baseDate); // 타임라인 첫 날짜의 연도
 
     // Prevent body scrolling behind the full-screen page
     useEffect(() => {
@@ -1827,7 +1830,7 @@ export function MovementEditPage({
                     </div>
 
                     <aside className="space-y-4 lg:sticky lg:top-0">
-                        <GrassPreview timeline={timeline} dayStatuses={dayStatuses} currentYear={currentYear} />
+                        <GrassPreview timeline={timeline} dayStatuses={dayStatuses} yearOf={yearOf} />
                     </aside>
                 </div>
             </main>

@@ -3,6 +3,7 @@ import { CheckCircle2, Send, AlertTriangle } from 'lucide-react';
 import { MovementGrid } from './movement.grid.component';
 import type { MovementRecord } from '../../types/movement/movement.type';
 import { extractPureMemberName, applyDutySchedulesToDataList } from '../../utils/movement.utils';
+import { createMdYearResolver } from '../../utils/movement/movement.year';
 
 interface MovementExcelViewProps {
     parsedData: any[];
@@ -45,6 +46,8 @@ export function MovementExcelView({
         const cleanName = extractPureMemberName(item.name);
         const records: MovementRecord[] = [];
         const currentYear = baseDate ? baseDate.getFullYear() : new Date().getFullYear();
+        // 'M.D' 의 연도: 타임라인 첫 날짜 기준으로 이어서 정한다 (해를 넘는 주차 대응)
+        const yearOf = createMdYearResolver(timeline, baseDate);
 
         const toISODate = (monthDayStr: string) => {
             if (!monthDayStr) return '';
@@ -54,7 +57,7 @@ export function MovementExcelView({
             const m = parseInt(parts[0]);
             const d = parseInt(parts[1]);
             if (isNaN(m) || isNaN(d)) return '';
-            return `${currentYear}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+            return `${yearOf(m, d)}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
         };
 
         if (item.period && item.type === '외박') {

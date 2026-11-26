@@ -15,7 +15,7 @@ interface KtaTemplateModalProps {
     handleKtaTemplateChange: (day: number, eventIndex: number, value: string) => void;
     addEventToTemplate: (day: number) => void;
     removeEventFromTemplate: (day: number, index: number) => void;
-    handleKtaSave: (dayLabels?: Record<number, string>) => void;
+    handleKtaSave: () => void;
     isKTASaving: boolean;
     ktaReferenceBatch: string;
     ktaReferenceType: string;
@@ -152,7 +152,7 @@ interface BlcTemplateModalProps {
     handleBlcTemplateChange: (day: number, eventIndex: number, value: string) => void;
     addEventToBlcTemplate: (day: number) => void;
     removeEventFromBlcTemplate: (day: number, index: number) => void;
-    handleBlcSave: (dayLabels?: Record<number, string>) => void;
+    handleBlcSave: () => void;
     isBLCSaving: boolean;
     blcReferenceBatch: string;
     blcReferenceDate: Date | null;

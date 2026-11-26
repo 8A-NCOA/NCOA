@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { db, auth } from '../../lib/firebase';
 import { doc, setDoc, updateDoc, writeBatch, collection, serverTimestamp, onSnapshot } from 'firebase/firestore';
 import type { CalendarEvent, CalendarMember, MemberConfig } from '../../types/calendar/calendar.type';
+import { isCountedBeforeMonth, monthKeyOfDateStr } from '../../utils/duty/dutyMonths';
 
 interface UseDutyStateProps {
     events: CalendarEvent[];
@@ -48,10 +49,11 @@ export function useDutyState({ events, members, personalRestrictions, dutyHolida
     const [editedMonths, setEditedMonths] = useState<Set<string>>(new Set());
     const [draftConfigs, setDraftConfigs] = useState<Record<string, Record<string, MemberConfig>>>({});
     const [draftLockedMembers, setDraftLockedMembers] = useState<Record<string, Record<string, boolean>>>({});
-    const [dutiesInitialized, setDutiesInitialized] = useState(false);
+    // null: 아직 첫 응답 전, true/false: 임시 당직 문서 존재 여부
+    const [draftExists, setDraftExists] = useState<boolean | null>(null);
     const isConfirmingRef = useRef(false);
 
-    // 임시 상태 Firestore 실시간 동기화 구독
+    // 임시 상태 Firestore 실시간 동기화 구독 (한 번만 구독; events 변화마다 재구독하지 않음)
     useEffect(() => {
         const unsub = onSnapshot(doc(db, 'settings', 'dutyDraft'), (snapshot) => {
             if (snapshot.exists()) {
@@ -60,21 +62,23 @@ export function useDutyState({ events, members, personalRestrictions, dutyHolida
                 setEditedMonths(new Set(data.editedMonths || []));
                 setDraftConfigs(data.configs || {});
                 setDraftLockedMembers(data.lockedMembers || {});
-                setDutiesInitialized(true);
+                setDraftExists(true);
             } else {
                 setDraftDuties([]);
                 setEditedMonths(new Set());
                 setDraftConfigs({});
                 setDraftLockedMembers({});
-                if (events.length > 0) {
-                    setDutiesInitialized(true);
-                }
+                setDraftExists(false);
             }
         }, (error) => {
             console.error("Error subscribing to dutyDraft:", error);
+            setDraftExists(false);
         });
         return () => unsub();
-    }, [events]);
+    }, []);
+
+    // 기존 동작 유지: 임시 문서가 있으면 바로, 없으면 일정 데이터가 들어온 뒤 초기화 완료로 본다.
+    const dutiesInitialized = draftExists === true || (draftExists === false && events.length > 0);
 
     const currentMonthKey = `${year}-${String(month + 1).padStart(2, '0')}`;
     const configs = useMemo(() => draftConfigs[currentMonthKey] || {}, [draftConfigs, currentMonthKey]);
@@ -290,44 +294,36 @@ export function useDutyState({ events, members, personalRestrictions, dutyHolida
         let currentMonthFriSun = 0;
         let currentMonthSat = 0;
 
-        const targetMonth = currentDate.getMonth() + 1; // 1-indexed selected month in planner
-
-        const CURRENT_YEAR = 2026;
-        const START_MONTH = 4; // April
+        // 플래너 대상 월 ('YYYY-MM'). 연도까지 포함해 비교해야 12월 → 다음 해 1월로 누적이 이어진다.
+        const targetMonthKey = currentMonthKey;
 
         // 1. 이전 달까지의 누적치는 DB 실제 저장 데이터(events)에서 계산
-        const dbDuties = events.filter((e: CalendarEvent) => e.type === 'duty' && e.memo === member.name && e.startDate.startsWith(`${CURRENT_YEAR}-`));
+        const dbDuties = events.filter((e: CalendarEvent) => e.type === 'duty' && e.memo === member.name && isCountedBeforeMonth(e.startDate, targetMonthKey));
 
         // 2. 이번 달(현재 플래너 대상 월)은 로컬 샌드박스 상태(duties)에서 계산
-        const currentMonthDutiesLocal = duties.filter((d: CalendarEvent) => d.memo === member.name && d.startDate.startsWith(`${CURRENT_YEAR}-`) && parseInt(d.startDate.split('-')[1], 10) === targetMonth);
+        const currentMonthDutiesLocal = duties.filter((d: CalendarEvent) => d.memo === member.name && monthKeyOfDateStr(d.startDate) === targetMonthKey);
 
         dbDuties.forEach((d: CalendarEvent) => {
-            const parts = d.startDate.split('-');
-            const eventMonth = parseInt(parts[1], 10);
-            const eventYear = parseInt(parts[0], 10);
-
-            if (eventYear === CURRENT_YEAR && eventMonth >= START_MONTH && eventMonth < targetMonth) {
-                const isKtaOrMedicMember = member.sections?.includes('KTA') || member.sections?.includes('MEDIC');
-                let dutyType = d.customDutyType || getDutyType(d.startDate);
-                if (!d.customDutyType && isKtaOrMedicMember && isDateDuringKtaPeriod(d.startDate, events) && !isDateAffectedByDonsa(d.startDate, events)) {
-                    const dObj = new Date(d.startDate + 'T00:00:00');
-                    const dayOfWeek = dObj.getDay();
-                    if (dayOfWeek === 6) {
-                        dutyType = 'sat';
-                    } else if (dayOfWeek === 0 || dayOfWeek === 5) {
-                        dutyType = 'friSun';
-                    } else {
-                        dutyType = 'weekday';
-                    }
+            const isKtaOrMedicMember = member.sections?.includes('KTA') || member.sections?.includes('MEDIC');
+            let dutyType = d.customDutyType || getDutyType(d.startDate);
+            if (!d.customDutyType && isKtaOrMedicMember && isDateDuringKtaPeriod(d.startDate, events) && !isDateAffectedByDonsa(d.startDate, events)) {
+                const dObj = new Date(d.startDate + 'T00:00:00');
+                const dayOfWeek = dObj.getDay();
+                if (dayOfWeek === 6) {
+                    dutyType = 'sat';
+                } else if (dayOfWeek === 0 || dayOfWeek === 5) {
+                    dutyType = 'friSun';
+                } else {
+                    dutyType = 'weekday';
                 }
+            }
 
-                if (dutyType === 'weekday') {
-                    extraWeekday++;
-                } else if (dutyType === 'friSun') {
-                    extraFriSun++;
-                } else if (dutyType === 'sat') {
-                    extraSat++;
-                }
+            if (dutyType === 'weekday') {
+                extraWeekday++;
+            } else if (dutyType === 'friSun') {
+                extraFriSun++;
+            } else if (dutyType === 'sat') {
+                extraSat++;
             }
         });
 
@@ -633,6 +629,7 @@ export function useDutyState({ events, members, personalRestrictions, dutyHolida
         duties, setDuties,
         currentMonthDuties, dutyStats,
         dutiesInitialized,
+        draftLoaded: draftExists !== null,
         togglePersonalRestriction,
         toggleMemberDutyCompleted,
         handleCellClick, handleClearDate, handleClearMonth,

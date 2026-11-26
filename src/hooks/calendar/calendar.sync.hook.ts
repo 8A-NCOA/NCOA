@@ -12,8 +12,10 @@ export function useCalendarSync() {
     const [blcScheduleTemplate, setBlcScheduleTemplate] = useState<ScheduleTemplateDay[]>(
         Array.from({ length: 23 }, (_, i) => ({ day: i, events: [] }))
     );
-    const [ktaDayLabels, setKtaDayLabels] = useState<Record<number, string>>({});
-    const [blcDayLabels, setBlcDayLabels] = useState<Record<number, string>>({});
+    // 편집 중인 템플릿이 어느 버전을 기준으로 하는지. 저장 시 서버 버전과 비교해
+    // 오래된 데이터로 덮어쓰는 것을 막는다. (calendar.template.hook.ts 참고)
+    const [ktaTemplateVersion, setKtaTemplateVersion] = useState(0);
+    const [blcTemplateVersion, setBlcTemplateVersion] = useState(0);
 
     useEffect(() => {
         let unsubscribeSchedules: () => void = () => { };
@@ -59,7 +61,7 @@ export function useCalendarSync() {
                     if (docSnap.exists()) {
                         const data = docSnap.data();
                         const savedSchedules = data.schedules || [];
-                        setKtaDayLabels(data.dayLabels || {});
+                        setKtaTemplateVersion(typeof data.schedulesVersion === 'number' ? data.schedulesVersion : 0);
                         setKtaScheduleTemplate(
                             Array.from({ length: 21 }, (_, i) => {
                                 const found = savedSchedules.find((s: any) => s.day === i);
@@ -71,7 +73,7 @@ export function useCalendarSync() {
                             })
                         );
                     } else {
-                        setKtaDayLabels({});
+                        setKtaTemplateVersion(0);
                         setKtaScheduleTemplate(Array.from({ length: 21 }, (_, i) => ({ day: i, events: [] })));
                     }
                 });
@@ -82,7 +84,7 @@ export function useCalendarSync() {
                     if (docSnap.exists()) {
                         const data = docSnap.data();
                         const savedSchedules = data.schedules || [];
-                        setBlcDayLabels(data.dayLabels || {});
+                        setBlcTemplateVersion(typeof data.schedulesVersion === 'number' ? data.schedulesVersion : 0);
                         const daysList = [-1, ...Array.from({ length: 31 }, (_, i) => i)];
                         setBlcScheduleTemplate(
                             daysList.map((d) => {
@@ -95,7 +97,7 @@ export function useCalendarSync() {
                             })
                         );
                     } else {
-                        setBlcDayLabels({});
+                        setBlcTemplateVersion(0);
                         const daysList = [-1, ...Array.from({ length: 31 }, (_, i) => i)];
                         setBlcScheduleTemplate(daysList.map(d => ({ day: d, events: [] })));
                     }
@@ -103,8 +105,6 @@ export function useCalendarSync() {
             } else {
                 setEvents([]);
                 setMembers([]);
-                setKtaDayLabels({});
-                setBlcDayLabels({});
                 setKtaScheduleTemplate(Array.from({ length: 21 }, (_, i) => ({ day: i, events: [] })));
                 const daysList = [-1, ...Array.from({ length: 31 }, (_, i) => i)];
                 setBlcScheduleTemplate(daysList.map(d => ({ day: d, events: [] })));
@@ -127,9 +127,7 @@ export function useCalendarSync() {
         blcScheduleTemplate,
         setKtaScheduleTemplate, // Exposed for Template Hook DnD
         setBlcScheduleTemplate, // Exposed for Template Hook DnD
-        ktaDayLabels,
-        blcDayLabels,
-        setKtaDayLabels,
-        setBlcDayLabels
+        ktaTemplateVersion,
+        blcTemplateVersion,
     };
 }

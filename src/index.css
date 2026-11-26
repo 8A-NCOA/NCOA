@@ -41,6 +41,15 @@
   max-height: 100%;
 }
 
+/* 스크롤은 되지만 스크롤바는 숨김 (당직 달력 칸, 당직 탭 헤더 등) */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 .pb-nav-clearance {
   padding-bottom: calc(3.25rem + env(safe-area-inset-bottom, 0px));
 }

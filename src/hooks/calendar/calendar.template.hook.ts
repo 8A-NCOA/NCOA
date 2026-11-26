@@ -1,14 +1,59 @@
 import { useState } from 'react';
-import { doc, setDoc } from 'firebase/firestore';
+import { doc, runTransaction } from 'firebase/firestore';
+import { FirebaseError } from 'firebase/app';
 import { db } from '../../lib/firebase';
 import type { DragEndEvent } from '@dnd-kit/core';
 import type { ScheduleTemplateDay } from '../../types/calendar/calendar.type';
+
+class TemplateConflictError extends Error {}
+
+/**
+ * 템플릿 schedules를 버전 확인 후 저장한다.
+ *
+ * - setDoc은 오프라인일 때 IndexedDB에 쌓였다가 몇 시간 뒤 서버에 도착할 수 있고,
+ *   그 사이 다른 기기에서 수정·삭제한 일정을 옛 내용으로 덮어쓴다.
+ *   트랜잭션은 오프라인에서 대기열에 쌓이지 않고 실패하므로 늦게 도착하는 쓰기가 생기지 않는다.
+ * - 편집 기준 버전(baseVersion)이 서버의 schedulesVersion과 다르면, 이 기기가 오래된
+ *   데이터를 보고 편집한 것이므로 저장하지 않는다.
+ */
+async function saveTemplateSchedules(
+    docId: 'ktaTemplate' | 'blcTemplate',
+    baseVersion: number,
+    template: ScheduleTemplateDay[]
+) {
+    const ref = doc(db, 'settings', docId);
+    await runTransaction(db, async (tx) => {
+        const snap = await tx.get(ref);
+        const current = snap.exists() ? snap.data().schedulesVersion : undefined;
+        const serverVersion = typeof current === 'number' ? current : 0;
+        if (serverVersion !== baseVersion) throw new TemplateConflictError();
+        tx.set(ref, {
+            schedules: template.map(s => ({
+                day: s.day,
+                events: s.events.filter(e => e.trim() !== '')
+            })),
+            schedulesVersion: serverVersion + 1
+        }, { merge: true });
+    });
+}
+
+function templateSaveErrorMessage(error: unknown, label: string) {
+    if (error instanceof TemplateConflictError) {
+        return `다른 곳에서 ${label} 일정이 먼저 수정되었습니다. 최신 내용으로 갱신된 뒤 다시 수정·저장해주세요.`;
+    }
+    if (!navigator.onLine || (error instanceof FirebaseError && (error.code === 'unavailable' || error.code === 'failed-precondition'))) {
+        return `네트워크에 연결되어 있지 않아 ${label} 일정을 저장하지 못했습니다. 연결 후 다시 저장해주세요.`;
+    }
+    return `${label} 일정 저장 중 오류가 발생했습니다.`;
+}
 
 export function useCalendarTemplate(
     ktaScheduleTemplate: ScheduleTemplateDay[],
     setKtaScheduleTemplate: React.Dispatch<React.SetStateAction<ScheduleTemplateDay[]>>,
     blcScheduleTemplate: ScheduleTemplateDay[],
-    setBlcScheduleTemplate: React.Dispatch<React.SetStateAction<ScheduleTemplateDay[]>>
+    setBlcScheduleTemplate: React.Dispatch<React.SetStateAction<ScheduleTemplateDay[]>>,
+    ktaTemplateVersion: number,
+    blcTemplateVersion: number
 ) {
     const [isKTAScheduleAdding, setIsKTAScheduleAdding] = useState(false);
     const [isKTASaving, setIsKTASaving] = useState(false);
@@ -66,20 +111,14 @@ export function useCalendarTemplate(
         ));
     };
 
-    const handleKtaSave = async (dayLabels?: Record<number, string>) => {
+    const handleKtaSave = async () => {
         setIsKTASaving(true);
         try {
-            await setDoc(doc(db, 'settings', 'ktaTemplate'), {
-                schedules: ktaScheduleTemplate.map(s => ({
-                    day: s.day,
-                    events: s.events.filter(e => e.trim() !== '')
-                })),
-                ...(dayLabels ? { dayLabels } : {})
-            }, { merge: true });
+            await saveTemplateSchedules('ktaTemplate', ktaTemplateVersion, ktaScheduleTemplate);
             setIsKTAScheduleAdding(false);
         } catch (error) {
             console.error("Error saving KTA template:", error);
-            alert("KTA 일정 저장 중 오류가 발생했습니다.");
+            alert(templateSaveErrorMessage(error, 'KTA'));
         } finally {
             setIsKTASaving(false);
         }
@@ -135,20 +174,14 @@ export function useCalendarTemplate(
         ));
     };
 
-    const handleBlcSave = async (dayLabels?: Record<number, string>) => {
+    const handleBlcSave = async () => {
         setIsBLCSaving(true);
         try {
-            await setDoc(doc(db, 'settings', 'blcTemplate'), {
-                schedules: blcScheduleTemplate.map(s => ({
-                    day: s.day,
-                    events: s.events.filter(e => e.trim() !== '')
-                })),
-                ...(dayLabels ? { dayLabels } : {})
-            }, { merge: true });
+            await saveTemplateSchedules('blcTemplate', blcTemplateVersion, blcScheduleTemplate);
             setIsBLCScheduleAdding(false);
         } catch (error) {
             console.error("Error saving BLC template:", error);
-            alert("BLC 일정 저장 중 오류가 발생했습니다.");
+            alert(templateSaveErrorMessage(error, 'BLC'));
         } finally {
             setIsBLCSaving(false);
         }

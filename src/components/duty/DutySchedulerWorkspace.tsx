@@ -1,6 +1,6 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, AlertCircle, X } from 'lucide-react';
+import { Check, AlertCircle, X, RefreshCw } from 'lucide-react';
 import { useDutySync } from '../../hooks/duty/useDutySync';
 import { isBlc30Days } from '../../utils/calendar.utils';
 import { useDutyState } from '../../hooks/duty/useDutyState';
@@ -17,6 +17,14 @@ import { getMemberPenaltyCounts } from '../../utils/duty/dutyAutoDistribute';
 import type { AssignedDuty } from '../../utils/duty/dutyAutoDistribute';
 import { getActiveSectionsFor } from '../../utils/duty/dutyAutoDistribute';
 import { exportCalendarImage } from '../../utils/duty/exportCalendarImage';
+import { createBlcDayCalculator } from '../../utils/duty/blcDayCalculator';
+
+/** 'YYYY-MM-DD' 에 offset 일을 더한 'YYYY-MM-DD' */
+function addDaysToDateStr(dateStr: string, offset: number): string {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const date = new Date(y, m - 1, d + offset);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
 
 interface DutySchedulerWorkspaceProps {
     onClose: () => void;
@@ -32,9 +40,9 @@ export default function DutySchedulerWorkspace({ onClose }: DutySchedulerWorkspa
 
     const {
         events, members, ktaTemplate, blcTemplate, personalRestrictions, loading,
-        extraBefore, extraAfter,
-        ktaDayLabels, setKtaDayLabels, restrictions, setRestrictions,
-        blcDayLabels, setBlcDayLabels, blcRestrictions, setBlcRestrictions,
+        ktaDayLabels, blcDayLabels, handleSetDayLabel,
+        restrictions, setRestrictions,
+        blcRestrictions, setBlcRestrictions,
         monthlyDayLabels,
         dutyHolidays, handleAddDutyHoliday, handleDeleteDutyHoliday,
         ktaSections, setKtaSections, blcSections, setBlcSections
@@ -52,6 +60,7 @@ export default function DutySchedulerWorkspace({ onClose }: DutySchedulerWorkspa
         duties, setDuties,
         currentMonthDuties, dutyStats,
         dutiesInitialized,
+        draftLoaded,
         togglePersonalRestriction,
         handleCellClick: baseHandleCellClick, handleClearDate, handleClearMonth,
         handleConfirmDuties,
@@ -75,10 +84,7 @@ export default function DutySchedulerWorkspace({ onClose }: DutySchedulerWorkspa
         handleSaveTemplateSettings,
         handleSaveBlcTemplateSettings
     } = useDutyTemplate({
-        ktaTemplate, blcTemplate,
         restrictions, blcRestrictions,
-        ktaDayLabels, blcDayLabels,
-        extraBefore, extraAfter,
         setRestrictions, setBlcRestrictions,
         showToast,
         ktaSections,
@@ -177,7 +183,24 @@ export default function DutySchedulerWorkspace({ onClose }: DutySchedulerWorkspa
     };
 
     const getDutyForDate = (dateStr: string) => duties.find((d: CalendarEvent) => d.startDate === dateStr);
-    const isHolidayDate = (dateStr: string) => events.some((e: CalendarEvent) => e.type === 'holiday' && e.holidayType !== 'duty' && dateStr >= e.startDate && dateStr <= e.endDate);
+    // 휴일 목록·BLC Day 번호·BLC 수료일은 일정(events)이 바뀔 때만 한 번 정리하고, 칸·대원마다 다시 세지 않는다.
+    const blcCalc = useMemo(() => createBlcDayCalculator(events), [events]);
+
+    // 날짜 → 그날 당직 목록(원래 순서 index 포함), 이름 → 대원. 연속 당직 검사에서 앞뒤 날짜만 바로 찾기 위함.
+    const dutiesByDate = useMemo(() => {
+        const map = new Map<string, { duty: CalendarEvent; index: number }[]>();
+        duties.forEach((duty: CalendarEvent, index: number) => {
+            const list = map.get(duty.startDate);
+            if (list) list.push({ duty, index });
+            else map.set(duty.startDate, [{ duty, index }]);
+        });
+        return map;
+    }, [duties]);
+    const membersByName = useMemo(() => {
+        const map = new Map<string, CalendarMember>();
+        members.forEach(m => { if (!map.has(m.name)) map.set(m.name, m); });
+        return map;
+    }, [members]);
 
     const parseLocalDate = (dateStr: string) => {
         const [y, m, d] = dateStr.split('-').map(Number);
@@ -189,29 +212,18 @@ export default function DutySchedulerWorkspace({ onClose }: DutySchedulerWorkspa
         const blcDay0s = events.filter((e: CalendarEvent) => e.type === 'blc' && e.memo?.includes('Day 0'));
 
         blcDay0s.forEach((day0: CalendarEvent) => {
-            const start = parseLocalDate(day0.startDate);
             const batch = day0.batch || "";
-            let dayCount = 0;
-            let current = new Date(start);
 
             if (day0.startDate === dateStr) {
                 ktaBlcEvents.push({ id: `blc-day0-${day0.id}`, type: 'blc', startDate: day0.startDate, endDate: day0.startDate, memo: `Day 0 (${batch})`, batch });
             }
 
             const limit = isBlc30Days(batch) ? 30 : 22;
-            while (dayCount < limit) {
-                current.setDate(current.getDate() + 1);
-                const currentStr = `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, '0')}-${String(current.getDate()).padStart(2, '0')}`;
-                const isSunday = current.getDay() === 0;
-
-                if (!isSunday && !isHolidayDate(currentStr)) {
-                    dayCount++;
-                    if (dayCount === limit && currentStr === dateStr) {
-                        const isDuringPoday = currentStr >= '2026-06-19' && currentStr <= '2026-06-22';
-                        if (!isDuringPoday) {
-                            ktaBlcEvents.push({ id: `dynamic-blc-grad-${batch}`, type: 'blc', startDate: currentStr, endDate: currentStr, memo: `Graduation (${batch})`, batch });
-                        }
-                    }
+            const graduationDate = blcCalc.getGraduationDate(day0.startDate, limit);
+            if (graduationDate === dateStr) {
+                const isDuringPoday = graduationDate >= '2026-06-19' && graduationDate <= '2026-06-22';
+                if (!isDuringPoday) {
+                    ktaBlcEvents.push({ id: `dynamic-blc-grad-${batch}`, type: 'blc', startDate: graduationDate, endDate: graduationDate, memo: `Graduation (${batch})`, batch });
                 }
             }
         });
@@ -237,105 +249,70 @@ export default function DutySchedulerWorkspace({ onClose }: DutySchedulerWorkspa
         return ktaBlcEvents;
     };
 
-    const getBlcActiveDay = (day0DateStr: string, targetDateStr: string, batch?: string) => {
-        const start = parseLocalDate(day0DateStr);
-        const target = parseLocalDate(targetDateStr);
+    const getBlcActiveDay = (day0DateStr: string, targetDateStr: string, batch?: string) =>
+        blcCalc.getBlcActiveDay(day0DateStr, targetDateStr, (batch && isBlc30Days(batch)) ? 30 : 22);
 
-        if (start.getTime() === target.getTime()) return 0;
-
-        if (target > start) {
-            let dayCount = 0;
-            let current = new Date(start);
-            const limit = (batch && isBlc30Days(batch)) ? 30 : 22;
-            while (current < target) {
-                current.setDate(current.getDate() + 1);
-                if (dayCount < limit) {
-                    const currentStr = `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, '0')}-${String(current.getDate()).padStart(2, '0')}`;
-                    const isSunday = current.getDay() === 0;
-                    if (!isSunday && !isHolidayDate(currentStr)) {
-                        dayCount++;
-                    }
-                } else {
-                    dayCount++;
-                }
-            }
-            return dayCount;
-        } else {
-            // 입소일(Day 0) 이전의 날짜는 단순 달력 일수 차이(음수)로 계산합니다.
-            // 입소 전이기 때문에 주말/공휴일 제외 규칙을 적용하지 않습니다.
-            const diffTime = target.getTime() - start.getTime();
-            return Math.round(diffTime / (1000 * 60 * 60 * 24));
-        }
+    // 목표치(평당/금일당/토당)는 렌더링마다 한 번만 읽는다. (이전에는 칸·대원마다 localStorage 를 다시 읽었다)
+    const readCriteria = (key: string, fallback: number) => {
+        const saved = localStorage.getItem(key);
+        return saved ? parseInt(saved, 10) : fallback;
     };
+    const baseCriteria = {
+        weekday: readCriteria('ncoa_criteria_weekday', 13),
+        friSun: readCriteria('ncoa_criteria_frisun', 9),
+        sat: readCriteria('ncoa_criteria_sat', 6)
+    };
+
+    // 대원별 "목표 달성(당직 완료)" 여부를 렌더링마다 한 번만 계산해 두고 함께 쓴다.
+    const computeDutyCompleted = (member: CalendarMember) => {
+        const stats = dutyStats[member.name] || { weekday: 0, friSun: 0, sat: 0 };
+        const penalties = getMemberPenaltyCounts(member);
+        const isSK = member.sections?.includes('SK') || false;
+        return isSK || !!member.dutyCompleted || (
+            stats.weekday >= baseCriteria.weekday + penalties.weekday &&
+            stats.friSun >= baseCriteria.friSun + penalties.friSun &&
+            stats.sat >= baseCriteria.sat + penalties.sat
+        );
+    };
+    const completedByName = new Map(members.map(m => [m.name, computeDutyCompleted(m)] as const));
+    const isMemberDutyCompleted = (member: CalendarMember) =>
+        completedByName.get(member.name) ?? computeDutyCompleted(member);
 
     const isMemberEligibleForDuty = (member: CalendarMember) => {
         if (member.role === 'runner') return false;
-
-        const stats = dutyStats[member.name] || { weekday: 0, friSun: 0, sat: 0 };
-        const baseCriteriaWeekday = (() => {
-            const saved = localStorage.getItem('ncoa_criteria_weekday');
-            return saved ? parseInt(saved, 10) : 13;
-        })();
-        const baseCriteriaFriSun = (() => {
-            const saved = localStorage.getItem('ncoa_criteria_frisun');
-            return saved ? parseInt(saved, 10) : 9;
-        })();
-        const baseCriteriaSat = (() => {
-            const saved = localStorage.getItem('ncoa_criteria_sat');
-            return saved ? parseInt(saved, 10) : 6;
-        })();
-        const penalties = getMemberPenaltyCounts(member);
-        const criteriaWeekday = baseCriteriaWeekday + penalties.weekday;
-        const criteriaFriSun = baseCriteriaFriSun + penalties.friSun;
-        const criteriaSat = baseCriteriaSat + penalties.sat;
-
-        const isSK = member.sections?.includes('SK') || false;
-        const isCompleted = isSK || !!member.dutyCompleted || (stats.weekday >= criteriaWeekday && stats.friSun >= criteriaFriSun && stats.sat >= criteriaSat);
-
-        if (isCompleted) return false;
-        return true;
+        return !isMemberDutyCompleted(member);
     };
 
-    const getConsecutiveRestrictionReason = (memberName: string, dateStr: string, allDuties: CalendarEvent[]) => {
-        const targetMember = members.find(m => m.name === memberName);
+    const getConsecutiveRestrictionReason = (memberName: string, dateStr: string) => {
+        const targetMember = membersByName.get(memberName);
         if (!targetMember) return null;
 
-        let reason: string | null = null;
+        // 앞뒤 이틀(±1, ±2일)의 당직만 확인한다. 같은 결과가 나오도록 원래 당직 목록 순서대로 판단한다.
+        const nearby: { duty: CalendarEvent; index: number; diffDays: number }[] = [];
+        for (const offset of [-2, -1, 1, 2]) {
+            for (const entry of dutiesByDate.get(addDaysToDateStr(dateStr, offset)) || []) {
+                nearby.push({ ...entry, diffDays: offset });
+            }
+        }
+        nearby.sort((a, b) => a.index - b.index);
 
-        allDuties.some((d: CalendarEvent) => {
-            if (d.type !== 'duty' || !d.memo) return false;
-
-            const dutyMember = members.find(m => m.name === d.memo);
-            if (!dutyMember) return false;
-
-            const date1 = new Date(dateStr + 'T00:00:00');
-            const date2 = new Date(d.startDate + 'T00:00:00');
-            const diffTime = date2.getTime() - date1.getTime();
-            const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+        for (const { duty: d, diffDays } of nearby) {
+            if (d.type !== 'duty' || !d.memo) continue;
+            const dutyMember = membersByName.get(d.memo);
+            if (!dutyMember) continue;
 
             if (dutyMember.name === targetMember.name) {
-                if (diffDays === -2 || diffDays === -1 || diffDays === 1 || diffDays === 2) {
-                    reason = '개인: 앞뒤 이틀 내 당직 있음';
-                    return true;
-                }
+                return '개인: 앞뒤 이틀 내 당직 있음';
             }
 
-            if (dutyMember.sections && targetMember.sections) {
-                if (diffDays === -1 || diffDays === 1) {
-                    const targetActiveOnDate = getActiveSectionsFor(targetMember, dateStr, events);
-                    const dutyMemberActiveOnDutyDate = getActiveSectionsFor(dutyMember, d.startDate, events);
-                    const hasIntersection = Array.from(targetActiveOnDate).some(s => dutyMemberActiveOnDutyDate.has(s));
-                    if (hasIntersection) {
-                        reason = '같은 섹션: 연달아 당직 불가';
-                        return true;
-                    }
-                }
+            if (dutyMember.sections && targetMember.sections && (diffDays === -1 || diffDays === 1)) {
+                const targetActiveOnDate = getActiveSectionsFor(targetMember, dateStr, events);
+                const dutyMemberActiveOnDutyDate = getActiveSectionsFor(dutyMember, d.startDate, events);
+                const hasIntersection = Array.from(targetActiveOnDate).some(s => dutyMemberActiveOnDutyDate.has(s));
+                if (hasIntersection) return '같은 섹션: 연달아 당직 불가';
             }
-
-            return false;
-        });
-
-        return reason;
+        }
+        return null;
     };
 
     const getMemberDutyRestrictionReason = (member: CalendarMember, dateStr: string) => {
@@ -352,30 +329,9 @@ export default function DutySchedulerWorkspace({ onClose }: DutySchedulerWorkspa
             }
         }
 
-        const stats = dutyStats[member.name] || { weekday: 0, friSun: 0, sat: 0 };
-        const baseCriteriaWeekday = (() => {
-            const saved = localStorage.getItem('ncoa_criteria_weekday');
-            return saved ? parseInt(saved, 10) : 13;
-        })();
-        const baseCriteriaFriSun = (() => {
-            const saved = localStorage.getItem('ncoa_criteria_frisun');
-            return saved ? parseInt(saved, 10) : 9;
-        })();
-        const baseCriteriaSat = (() => {
-            const saved = localStorage.getItem('ncoa_criteria_sat');
-            return saved ? parseInt(saved, 10) : 6;
-        })();
-        const penalties = getMemberPenaltyCounts(member);
-        const criteriaWeekday = baseCriteriaWeekday + penalties.weekday;
-        const criteriaFriSun = baseCriteriaFriSun + penalties.friSun;
-        const criteriaSat = baseCriteriaSat + penalties.sat;
+        if (isMemberDutyCompleted(member)) return 'completed';
 
-        const isSK = member.sections?.includes('SK') || false;
-        const isCompleted = isSK || !!member.dutyCompleted || (stats.weekday >= criteriaWeekday && stats.friSun >= criteriaFriSun && stats.sat >= criteriaSat);
-
-        if (isCompleted) return 'completed';
-
-        const consecutiveReason = getConsecutiveRestrictionReason(member.name, dateStr, duties);
+        const consecutiveReason = getConsecutiveRestrictionReason(member.name, dateStr);
         if (consecutiveReason) return consecutiveReason;
 
         // BLC 수료포데이 당직 불가 체크 (13-16 포데이라면 12-16 당직 불가)
@@ -492,6 +448,17 @@ export default function DutySchedulerWorkspace({ onClose }: DutySchedulerWorkspa
         baseHandleCellClick(dateStr, directMemberName);
     };
 
+    // 필요한 데이터를 모두 받은 뒤 한 번에 그린다. 그 전에는 가벼운 로딩 화면만 보여주어
+    // 데이터가 하나 도착할 때마다 달력 전체를 다시 계산·렌더링하지 않게 한다.
+    if (loading || !draftLoaded) {
+        return (
+            <div className="safe-area-top-always fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-slate-950 text-slate-500 font-sans h-full w-full">
+                <RefreshCw className="w-6 h-6 animate-spin text-indigo-400" />
+                <span className="text-xs font-bold">당직 데이터 불러오는 중...</span>
+            </div>
+        );
+    }
+
     return (
         <div className="safe-area-top-always fixed inset-0 z-50 flex bg-slate-950 text-slate-100 overflow-hidden font-sans h-full w-full">
             {toast && (
@@ -507,15 +474,14 @@ export default function DutySchedulerWorkspace({ onClose }: DutySchedulerWorkspa
             <DutySidebar
                 configs={configs}
                 viewMode={viewMode}
-                loading={loading || !dutiesInitialized}
+                loading={!dutiesInitialized}
                 members={members}
                 dutyStats={dutyStats}
                 restrictionBrush={restrictionBrush}
                 setRestrictionBrush={setRestrictionBrush}
                 ktaDayLabels={ktaDayLabels}
-                setKtaDayLabels={setKtaDayLabels}
                 blcDayLabels={blcDayLabels}
-                setBlcDayLabels={setBlcDayLabels}
+                handleSetDayLabel={handleSetDayLabel}
                 handleSaveTemplateSettings={handleSaveTemplateSettings}
                 handleSaveBlcTemplateSettings={handleSaveBlcTemplateSettings}
                 showToast={showToast}
@@ -601,6 +567,7 @@ export default function DutySchedulerWorkspace({ onClose }: DutySchedulerWorkspa
                         dutyHolidays={dutyHolidays}
                         selectedMember={selectedMember}
                         isForceAssignMode={isForceAssignMode}
+                        blcCalc={blcCalc}
                     />
                 ) : (
                     <DutyTemplateGrid
@@ -613,9 +580,7 @@ export default function DutySchedulerWorkspace({ onClose }: DutySchedulerWorkspa
                         handleToggleRestriction={handleToggleRestriction}
                         handleToggleBlcRestriction={handleToggleBlcRestriction}
                         ktaDayLabels={ktaDayLabels}
-                        setKtaDayLabels={setKtaDayLabels}
                         blcDayLabels={blcDayLabels}
-                        setBlcDayLabels={setBlcDayLabels}
                         ktaSections={ktaSections}
                         blcSections={blcSections}
                         isBlc30={isBlc30}

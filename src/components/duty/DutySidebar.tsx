@@ -22,9 +22,8 @@ interface DutySidebarProps {
     restrictionBrush: string | null;
     setRestrictionBrush: React.Dispatch<React.SetStateAction<string | null>>;
     ktaDayLabels: Record<number, string>;
-    setKtaDayLabels: React.Dispatch<React.SetStateAction<Record<number, string>>>;
     blcDayLabels: Record<number, string>;
-    setBlcDayLabels: React.Dispatch<React.SetStateAction<Record<number, string>>>;
+    handleSetDayLabel: (mode: 'kta' | 'blc', day: number, text: string | null) => Promise<void>;
     handleSaveTemplateSettings: () => void;
     handleSaveBlcTemplateSettings: () => void;
     showToast: (msg: string, type?: 'success' | 'error') => void;
@@ -45,8 +44,7 @@ export function DutySidebar({
     configs,
     viewMode, loading, members, dutyStats,
     restrictionBrush, setRestrictionBrush,
-    ktaDayLabels, setKtaDayLabels,
-    blcDayLabels, setBlcDayLabels,
+    ktaDayLabels, blcDayLabels, handleSetDayLabel,
     handleSaveTemplateSettings, handleSaveBlcTemplateSettings,
     showToast,
     dutyHolidays, handleAddDutyHoliday, handleDeleteDutyHoliday,
@@ -695,10 +693,9 @@ export function DutySidebar({
                                             showToast("Day 번호와 배지 텍스트를 정확히 입력해주세요.", "error");
                                             return;
                                         }
-                                        setKtaDayLabels(prev => ({ ...prev, [dayNum]: txt }));
                                         dayInput.value = '';
                                         textInput.value = '';
-                                        showToast(`Day ${dayNum}에 '${txt}' 라벨을 임시 등록했습니다.`);
+                                        handleSetDayLabel('kta', dayNum, txt);
                                     }}
                                     className="w-full py-1.5 bg-rose-600 hover:bg-rose-550 active:scale-95 text-white rounded-lg text-xs font-black transition-all cursor-pointer text-center"
                                 >
@@ -712,11 +709,7 @@ export function DutySidebar({
                                         <div key={d} className="flex items-center justify-between bg-slate-950/60 py-1 px-2 rounded-lg border border-slate-900">
                                             <span className="text-[10px] font-black text-slate-350 truncate pr-1">Day {d}: <span className="text-rose-450 font-bold">{label}</span></span>
                                             <button
-                                                onClick={() => {
-                                                    const next = { ...ktaDayLabels };
-                                                    delete next[parseInt(d, 10)];
-                                                    setKtaDayLabels(next);
-                                                }}
+                                                onClick={() => handleSetDayLabel('kta', parseInt(d, 10), null)}
                                                 className="text-[9px] font-bold text-slate-500 hover:text-red-400 transition-colors shrink-0 px-1"
                                             >
                                                 삭제
@@ -844,10 +837,9 @@ export function DutySidebar({
                                             showToast("Day 번호와 배지 텍스트를 정확히 입력해주세요.", "error");
                                             return;
                                         }
-                                        setBlcDayLabels(prev => ({ ...prev, [dayNum]: txt }));
                                         dayInput.value = '';
                                         textInput.value = '';
-                                        showToast(`BLC Day ${dayNum}에 '${txt}' 라벨을 임시 등록했습니다.`);
+                                        handleSetDayLabel('blc', dayNum, txt);
                                     }}
                                     className="w-full py-1.5 bg-blue-600 hover:bg-blue-550 active:scale-95 text-white rounded-lg text-xs font-black transition-all cursor-pointer text-center"
                                 >
@@ -861,11 +853,7 @@ export function DutySidebar({
                                         <div key={d} className="flex items-center justify-between bg-slate-950/60 py-1 px-2 rounded-lg border border-slate-900">
                                             <span className="text-[10px] font-black text-slate-350 truncate pr-1">Day {d}: <span className="text-indigo-400 font-bold">{label}</span></span>
                                             <button
-                                                onClick={() => {
-                                                    const next = { ...blcDayLabels };
-                                                    delete next[parseInt(d, 10)];
-                                                    setBlcDayLabels(next);
-                                                }}
+                                                onClick={() => handleSetDayLabel('blc', parseInt(d, 10), null)}
                                                 className="text-[9px] font-bold text-slate-500 hover:text-red-400 transition-colors shrink-0 px-1"
                                             >
                                                 삭제

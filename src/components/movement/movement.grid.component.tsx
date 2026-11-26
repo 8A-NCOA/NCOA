@@ -4,6 +4,7 @@ import { cn } from '../../lib/utils';
 import { calculateRank } from '../../lib/rankUtils';
 import type { MovementRecord } from '../../types/movement/movement.type';
 import { extractPureMemberName, getPeriodMovementsForMember, applyDutySchedulesToDataList, getCoreWindow } from '../../utils/movement.utils';
+import { createMdYearResolver, timelineStartYear } from '../../utils/movement/movement.year';
 import {
     compareTableOrder,
     getTableSectionInfo,
@@ -80,7 +81,9 @@ export function MovementGrid({ timeline, dataList, dbMembers, baseDate, movement
         return () => clearTimeout(timer);
     }, [activeCardIndex]);
 
-    const currentYear = baseDate ? baseDate.getFullYear() : new Date().getFullYear();
+    // 'M.D' 의 연도: 타임라인 첫 날짜를 기준일에서 가장 가까운 해로 잡고 이어서 정한다 (해를 넘는 주차 대응)
+    const yearOf = createMdYearResolver(timeline, baseDate);
+    const timelineYear = timelineStartYear(timeline, baseDate);
 
     // 패스지 'Table'과 같은 기준(섹션 → HQ 부 섹션 → 입대일 → 계급 → 영문 이름)으로 정렬하고 섹션별로 묶는다.
     // 카드 묶음은 HQ S-1 ~ S-6을 'HQ' 하나로 (묶음 안에서는 S-1 → S-6 순서 유지). 전입 예정 신병은 맨 뒤 '전입 예정'.
@@ -131,17 +134,17 @@ export function MovementGrid({ timeline, dataList, dbMembers, baseDate, movement
                 if (!timeline || timeline.length === 0) return null;
 
                 // 주기(수~화). 시트 주차가 수요일에 시작하지 않아도 요일로 구한다.
-                const coreTimeline = getCoreWindow(timeline, currentYear).coreMDs;
+                const coreTimeline = getCoreWindow(timeline, timelineYear).coreMDs;
                 const coreIsoDates = coreTimeline.map(dateStr => {
                     const [m, d] = dateStr.split('.').map(Number);
-                    return `${currentYear}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+                    return `${yearOf(m, d)}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
                 });
                 const weekStartIso = coreIsoDates[0] || '';
                 const weekEndIso = coreIsoDates[coreIsoDates.length - 1] || '';
 
                 const timelineIsoDates = timeline.map(dateStr => {
                     const [m, d] = dateStr.split('.').map(Number);
-                    return `${currentYear}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+                    return `${yearOf(m, d)}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
                 });
                 const timelineEndIso = timelineIsoDates[timelineIsoDates.length - 1] || '';
 
@@ -196,7 +199,7 @@ export function MovementGrid({ timeline, dataList, dbMembers, baseDate, movement
                 const { allPeriodMovements } = getPeriodMovementsForMember(
                     cleanName,
                     timeline,
-                    currentYear,
+                    timelineYear,
                     movements,
                     member.dayStatuses
                 );
@@ -246,8 +249,8 @@ export function MovementGrid({ timeline, dataList, dbMembers, baseDate, movement
                     if (matchedTimelineDates.length > 0) {
                         const [firstM, firstD] = matchedTimelineDates[0].split('.').map(Number);
                         const [lastM, lastD] = matchedTimelineDates[matchedTimelineDates.length - 1].split('.').map(Number);
-                        let sObj = new Date(currentYear, firstM - 1, firstD, 12, 0, 0, 0);
-                        let eObj = new Date(currentYear, lastM - 1, lastD, 12, 0, 0, 0);
+                        let sObj = new Date(yearOf(firstM, firstD), firstM - 1, firstD, 12, 0, 0, 0);
+                        let eObj = new Date(yearOf(lastM, lastD), lastM - 1, lastD, 12, 0, 0, 0);
 
                         if (matchedTimelineDates[0] === timeline[0]) {
                             let prevD = new Date(sObj);
@@ -525,7 +528,7 @@ export function MovementGrid({ timeline, dataList, dbMembers, baseDate, movement
                                 {timeline.map((dateStr, tIdx) => {
                                 let status = member.dayStatuses[dateStr] || 'none';
                                 const [m, d] = dateStr.split('.').map(Number);
-                                const isWeekend = new Date(currentYear, m - 1, d, 12, 0, 0, 0).getDay() % 6 === 0;
+                                const isWeekend = new Date(yearOf(m, d), m - 1, d, 12, 0, 0, 0).getDay() % 6 === 0;
 
                                 // Dynamically detect if we are departing for/on a pass on the recovery day (day after duty)
                                 if (status === 'pass-depart' || status === 'pass') {
@@ -534,7 +537,7 @@ export function MovementGrid({ timeline, dataList, dbMembers, baseDate, movement
                                         const yesterdayStr = timeline[tIdx - 1];
                                         isYesterdayDuty = (member.dayStatuses[yesterdayStr] || 'none') === 'duty';
                                     } else {
-                                        const yesterdayDate = new Date(currentYear, m - 1, d - 1, 12, 0, 0, 0);
+                                        const yesterdayDate = new Date(yearOf(m, d), m - 1, d - 1, 12, 0, 0, 0);
                                         const yesterdayStr = `${yesterdayDate.getMonth() + 1}.${yesterdayDate.getDate()}`;
                                         if (member.dayStatuses[yesterdayStr] === 'duty') {
                                             isYesterdayDuty = true;
@@ -558,14 +561,14 @@ export function MovementGrid({ timeline, dataList, dbMembers, baseDate, movement
                                 // Dynamically detect if departing for pass on vacation return date
                                 // 휴외연계 허용 여부와 무관하게 점호 보고 포함 여부는 동일하므로, 휴가 복귀일과 외박 출발일이 겹치면 무조건 반반 잔디(vacation-pass-depart)로 표시
                                 if (status !== 'linked' && status !== 'duty' && status !== 'recovery') {
-                                    const curDateIso = `${currentYear}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+                                    const curDateIso = `${yearOf(m, d)}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 
                                     // 1) 오늘이 휴가 복귀일인지 확인 (시트 상의 contiguousEnd, movements DB의 endDate, 또는 오늘이 휴가이고 내일이 휴가가 아님)
                                     const isVacationReturn = (contiguousEnd && curDateIso === contiguousEnd) || movements.some(mov =>
                                         mov.name === cleanName && mov.type === 'vacation' && mov.endDate === curDateIso
                                     ) || (
                                         (status === 'vacation' || status === 'vacation-pass-depart') && (() => {
-                                            const nextD = new Date(currentYear, m - 1, d + 1, 12, 0, 0, 0);
+                                            const nextD = new Date(yearOf(m, d), m - 1, d + 1, 12, 0, 0, 0);
                                             return !checkStatusOnDate(nextD);
                                         })()
                                     );
@@ -582,7 +585,7 @@ export function MovementGrid({ timeline, dataList, dbMembers, baseDate, movement
                                         // 내일이 외박이면 오늘 출발. 내일이 '외박출발'이면 출발은 내일이므로 오늘은 아니다.
                                         if (tomorrowStr && member.dayStatuses[tomorrowStr] === 'pass') return true;
                                         if (sheetWeeks) {
-                                            const nextD = new Date(currentYear, m - 1, d + 1, 12, 0, 0, 0);
+                                            const nextD = new Date(yearOf(m, d), m - 1, d + 1, 12, 0, 0, 0);
                                             const nextDStr = `${nextD.getMonth() + 1}.${nextD.getDate()}`;
                                             for (const w of sheetWeeks) {
                                                 if (w.data && Array.isArray(w.data)) {
@@ -630,7 +633,7 @@ export function MovementGrid({ timeline, dataList, dbMembers, baseDate, movement
                                         {(() => {
                                             const isFirst = tIdx === 0;
                                             const isLast = tIdx === timeline.length - 1;
-                                            const isSunday = new Date(currentYear, m - 1, d, 12, 0, 0, 0).getDay() === 0;
+                                            const isSunday = new Date(yearOf(m, d), m - 1, d, 12, 0, 0, 0).getDay() === 0;
                                             const isMonthStart = d === 1;
                                             const today = baseDate || new Date();
                                             const isToday = today.getMonth() === m - 1 && today.getDate() === d;

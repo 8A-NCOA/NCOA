@@ -44,7 +44,7 @@ export default function CalendarTab({ baseDate }: CalendarTabProps) {
     const {
         events, members, ktaScheduleTemplate, blcScheduleTemplate,
         setKtaScheduleTemplate, setBlcScheduleTemplate,
-        ktaDayLabels, blcDayLabels
+        ktaTemplateVersion, blcTemplateVersion
     } = useCalendarSync();
 
     // 2. Schedule & State Hook
@@ -78,7 +78,8 @@ export default function CalendarTab({ baseDate }: CalendarTabProps) {
         removeEventFromBlcTemplate, handleBlcSave
     } = useCalendarTemplate(
         ktaScheduleTemplate, setKtaScheduleTemplate,
-        blcScheduleTemplate, setBlcScheduleTemplate
+        blcScheduleTemplate, setBlcScheduleTemplate,
+        ktaTemplateVersion, blcTemplateVersion
     );
 
     // Stop scrolling when modals are open
@@ -128,8 +129,6 @@ export default function CalendarTab({ baseDate }: CalendarTabProps) {
                     setSelectedDate(dateStr);
                     setIsAdding(true);
                 }}
-                ktaDayLabels={ktaDayLabels}
-                blcDayLabels={blcDayLabels}
                 calendarMode={calendarMode}
                 members={members}
             />

@@ -2,6 +2,7 @@ import { Trash2 } from 'lucide-react';
 import type { CalendarEvent, CalendarMember } from '../../types/calendar/calendar.type';
 import { calculateRank } from '../../lib/rankUtils';
 import { isBlc30Days } from '../../utils/calendar.utils';
+import type { BlcDayCalculator } from '../../utils/duty/blcDayCalculator';
 
 interface DutyCalendarGridProps {
     calendarDays: { dayNumber: number; dateStr: string; isCurrentMonth: boolean }[];
@@ -23,6 +24,7 @@ interface DutyCalendarGridProps {
     dutyHolidays: any[];
     selectedMember: CalendarMember | null;
     isForceAssignMode?: boolean;
+    blcCalc: BlcDayCalculator;
 }
 
 export function DutyCalendarGrid({
@@ -31,7 +33,7 @@ export function DutyCalendarGrid({
     getKtaBlcEventsForDate, getDutyForDate,
     isMemberEligibleForDuty, getMemberDutyRestrictionReason,
     handleCellClick, handleClearDate, togglePersonalRestriction,
-    dutyHolidays, selectedMember, isForceAssignMode
+    dutyHolidays, selectedMember, isForceAssignMode, blcCalc
 }: DutyCalendarGridProps) {
     const getOffsetDateStr = (dateStr: string, offset: number) => {
         const d = new Date(dateStr + 'T00:00:00');
@@ -159,37 +161,8 @@ export function DutyCalendarGrid({
                     return new Date(y, m - 1, d);
                 };
 
-                const getBlcActiveDay = (day0DateStr: string, targetDateStr: string, batch?: string) => {
-                    const start = parseLocalDate(day0DateStr);
-                    const target = parseLocalDate(targetDateStr);
-
-                    if (start.getTime() === target.getTime()) return 0;
-
-                    if (target > start) {
-                        let dayCount = 0;
-                        let current = new Date(start);
-                        const limit = isBlc30Days(batch) ? 30 : 22;
-                        while (current < target) {
-                            current.setDate(current.getDate() + 1);
-                            if (dayCount < limit) {
-                                const currentStr = `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, '0')}-${String(current.getDate()).padStart(2, '0')}`;
-                                const isSunday = current.getDay() === 0;
-                                const isHoliday = events.some((e: CalendarEvent) => e.type === 'holiday' && e.holidayType !== 'duty' && currentStr >= e.startDate && currentStr <= e.endDate);
-                                if (!isSunday && !isHoliday) {
-                                    dayCount++;
-                                }
-                            } else {
-                                dayCount++;
-                            }
-                        }
-                        return dayCount;
-                    } else {
-                        // 입소일(Day 0) 이전의 날짜는 단순 달력 일수 차이(음수)로 계산합니다.
-                        // 입소 전이기 때문에 주말/공휴일 제외 규칙을 적용하지 않습니다.
-                        const diffTime = target.getTime() - start.getTime();
-                        return Math.round(diffTime / (1000 * 60 * 60 * 24));
-                    }
-                };
+                const getBlcActiveDay = (day0DateStr: string, targetDateStr: string, batch?: string) =>
+                    blcCalc.getBlcActiveDay(day0DateStr, targetDateStr, isBlc30Days(batch) ? 30 : 22);
 
                 const customKtaBadges: { id: string; label: string }[] = [];
                 const ktaDay0s = events.filter(e => e.type === 'kta' && e.memo?.includes('Day 0'));
@@ -224,7 +197,7 @@ export function DutyCalendarGrid({
                     <div
                         key={cell.dateStr}
                         onClick={() => handleCellClick(cell.dateStr)}
-                        className={`border-r border-b border-slate-850 p-1.5 flex flex-col justify-between select-none relative transition-all group overflow-hidden ${cell.isCurrentMonth
+                        className={`border-r border-b border-slate-850 p-1.5 flex flex-col justify-between select-none relative group overflow-hidden ${cell.isCurrentMonth
                                 ? highlightClass
                                     ? `${highlightClass} cursor-crosshair`
                                     : 'bg-slate-900/10 hover:bg-slate-800/40 cursor-crosshair'
@@ -301,7 +274,7 @@ export function DutyCalendarGrid({
 
                         <div className="flex-1 min-h-0 mt-1 pt-1 border-t border-slate-800/40 flex flex-col gap-0.5 w-full overflow-hidden">
                             {duty ? (
-                                <div className="w-full flex items-center justify-between p-1 bg-slate-900 border border-slate-800 rounded-lg hover:border-slate-700 transition-all shadow-md shrink-0">
+                                <div className="w-full flex items-center justify-between p-1 bg-slate-900 border border-slate-800 rounded-lg hover:border-slate-700 shadow-md shrink-0">
                                     <div className="flex flex-col gap-0.5 min-w-0">
                                         <span className="text-[10px] font-black text-slate-200 truncate pr-1">
                                             {duty.memo}
@@ -320,7 +293,7 @@ export function DutyCalendarGrid({
                                     </div>
                                     <button
                                         onClick={(e) => handleClearDate(e, duty.id)}
-                                        className="p-0.5 hover:bg-slate-800 hover:text-red-400 rounded text-slate-500 transition-all shrink-0 opacity-0 group-hover:opacity-100"
+                                        className="p-0.5 hover:bg-slate-800 hover:text-red-400 rounded text-slate-500 shrink-0 opacity-0 group-hover:opacity-100"
                                         title="당직자 삭제"
                                     >
                                         <Trash2 className="w-3 h-3" />
@@ -330,13 +303,7 @@ export function DutyCalendarGrid({
                                 cell.isCurrentMonth && (
                                     <div
                                         className="flex-1 overflow-y-auto no-scrollbar flex flex-wrap gap-0.5 content-start w-full pt-0.5"
-                                        style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
                                     >
-                                        <style>{`
-                                            .no-scrollbar::-webkit-scrollbar {
-                                                display: none;
-                                            }
-                                        `}</style>
                                         {eligibleMembers.length === 0 ? (
                                             <span className="text-[8px] font-bold text-rose-500/70 py-0.5">🚫 가능 인원 없음</span>
                                         ) : (
@@ -383,7 +350,7 @@ export function DutyCalendarGrid({
                                                             if (reason === '신병보호기간') return;
                                                             togglePersonalRestriction(cell.dateStr, member.name);
                                                         }}
-                                                        className={`px-1.5 py-0.5 rounded text-[8.5px] font-black transition-all text-center shrink-0 border ${btnClassName}`}
+                                                        className={`px-1.5 py-0.5 rounded text-[8.5px] font-black text-center shrink-0 border ${btnClassName}`}
                                                         title={titleText}
                                                     >
                                                         {member.name}

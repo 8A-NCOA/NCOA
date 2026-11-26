@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { X, ChevronLeft, ChevronRight, ChevronDown, HelpCircle } from 'lucide-react';
 import { db } from '../../lib/firebase';
@@ -7,6 +7,7 @@ import { cn } from '../../lib/utils';
 import type { CalendarEvent, CalendarMember } from '../../types/calendar/calendar.type';
 import { calculateRank } from '../../lib/rankUtils';
 import { getMemberPenaltyCounts } from '../../utils/duty/dutyAutoDistribute';
+import { DUTY_COUNT_START_MONTH, buildDutyMonthOptions, isCountedThroughMonth, monthKeyOfDate, monthKeyOfDateStr } from '../../utils/duty/dutyMonths';
 
 interface DutyTrackerModalProps {
     isOpen: boolean;
@@ -19,25 +20,6 @@ interface DutyTrackerModalProps {
 type SortField = 'seniority' | 'total';
 type SortOrder = 'asc' | 'desc';
 
-interface MonthOption {
-    label: string;
-    key: string;
-    year: number;
-    month: number;
-}
-
-const MONTH_LABELS: MonthOption[] = [
-    { label: '2026년 3월까지 (누적 기준선)', key: 'baseline', year: 2026, month: 3 },
-    { label: '2026년 4월 (누적)', key: '2026-04', year: 2026, month: 4 },
-    { label: '2026년 5월 (누적)', key: '2026-05', year: 2026, month: 5 },
-    { label: '2026년 6월 (누적)', key: '2026-06', year: 2026, month: 6 },
-    { label: '2026년 7월 (누적)', key: '2026-07', year: 2026, month: 7 },
-    { label: '2026년 8월 (누적)', key: '2026-08', year: 2026, month: 8 },
-    { label: '2026년 9월 (누적)', key: '2026-09', year: 2026, month: 9 },
-    { label: '2026년 10월 (누적)', key: '2026-10', year: 2026, month: 10 },
-    { label: '2026년 11월 (누적)', key: '2026-11', year: 2026, month: 11 },
-    { label: '2026년 12월 (누적)', key: '2026-12', year: 2026, month: 12 },
-];
 
 export function DutyTrackerModal({ isOpen, onClose, events, members, currentDate }: DutyTrackerModalProps) {
     const [showCompleted, setShowCompleted] = useState(false);
@@ -73,20 +55,26 @@ export function DutyTrackerModal({ isOpen, onClose, events, members, currentDate
     // Switcher state
     const [selectedMonthIndex, setSelectedMonthIndex] = useState(0);
 
+    // 월 선택 목록: 기준선 + 2026년 4월부터 (최소 2026년 12월, 오늘·선택 월·가장 늦은 당직 월 중 가장 늦은 달)까지.
+    // 연도가 바뀌어도 누적이 이어지도록 고정 목록 대신 매번 만든다.
+    const MONTH_LABELS = useMemo(() => {
+        const latestDutyKey = events.reduce((latest, e) => (
+            e.type === 'duty' && e.startDate && monthKeyOfDateStr(e.startDate) > latest ? monthKeyOfDateStr(e.startDate) : latest
+        ), '');
+        const lastKey = ['2026-12', monthKeyOfDate(new Date()), monthKeyOfDate(currentDate), latestDutyKey]
+            .reduce((a, b) => (b > a ? b : a));
+        return buildDutyMonthOptions(lastKey);
+    }, [events, currentDate]);
+
     // Local state for baselines: Record<memberId, { weekday, friSun, sat }>
     const [baselines, setBaselines] = useState<Record<string, { weekday: number | string; friSun: number | string; sat: number | string }>>({});
 
     // Initialize switcher index based on currentDate ONLY when modal opens
     useEffect(() => {
         if (isOpen) {
-            const curYear = currentDate.getFullYear();
-            const curMonth = currentDate.getMonth() + 1; // 1-indexed
-            if (curYear === 2026) {
-                const found = MONTH_LABELS.findIndex(m => m.year === curYear && m.month === curMonth);
-                setSelectedMonthIndex(found !== -1 ? found : 2); // Default to current month or May
-            } else {
-                setSelectedMonthIndex(2); // May
-            }
+            const curKey = monthKeyOfDate(currentDate);
+            const found = MONTH_LABELS.findIndex(m => m.key === curKey);
+            setSelectedMonthIndex(found !== -1 ? found : Math.min(2, MONTH_LABELS.length - 1)); // 현재 월, 없으면 기존 기본값(2026년 5월)
         }
     }, [isOpen]);
 
@@ -198,7 +186,7 @@ export function DutyTrackerModal({ isOpen, onClose, events, members, currentDate
 
     const getMemberDutyDates = (member: CalendarMember) => {
         const memberDuties = events
-            .filter(e => e.type === 'duty' && e.memo === member.name && e.startDate >= '2026-04-01')
+            .filter(e => e.type === 'duty' && e.memo === member.name && monthKeyOfDateStr(e.startDate) >= DUTY_COUNT_START_MONTH)
             .sort((a, b) => a.startDate.localeCompare(b.startDate));
 
         const weekdayList: string[] = [];
@@ -267,16 +255,12 @@ export function DutyTrackerModal({ isOpen, onClose, events, members, currentDate
         let extraSat = 0;
 
         if (!isBaselineMode) {
-            // Count all duties from April 2026 (4) up to the selected switcher month
-            const memberDuties = events.filter(e => e.type === 'duty' && e.memo === member.name && e.startDate.startsWith('2026-'));
-            const targetMonth = MONTH_LABELS[selectedMonthIndex].month;
+            // 2026년 4월부터 선택한 월까지 누적 (연-월로 비교해 연도가 바뀌어도 이어짐)
+            const memberDuties = events.filter(e => e.type === 'duty' && e.memo === member.name);
+            const targetMonthKey = MONTH_LABELS[selectedMonthIndex].key;
 
             memberDuties.forEach(d => {
-                const parts = d.startDate.split('-');
-                const eventMonth = parseInt(parts[1], 10);
-                const eventYear = parseInt(parts[0], 10);
-
-                if (eventYear === 2026 && eventMonth >= 4 && eventMonth <= targetMonth) {
+                if (isCountedThroughMonth(d.startDate, targetMonthKey)) {
                     const type = getDutyTypeForEvent(d, member);
                     if (type === 'weekday') extraWeekday++;
                     else if (type === 'friSun') extraFriSun++;
