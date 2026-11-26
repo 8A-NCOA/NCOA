@@ -2,6 +2,7 @@ import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { CalendarEvent, CalendarMember } from '../../types/calendar/calendar.type';
+import { isCountedBeforeMonth, monthKeyOfDate } from '../../utils/duty/dutyMonths';
 
 interface BatchDutyModalProps {
     isBatchDutyAdding: boolean;
@@ -111,15 +112,12 @@ export function BatchDutyModal({
         let extraFriSun = 0;
         let extraSat = 0;
 
-        const prevMonthLimit = currentDate.getMonth(); // 1-indexed prev month limit
-        const memberDuties = events.filter(e => e.type === 'duty' && e.memo === member.name && e.startDate.startsWith('2026-'));
-        
-        memberDuties.forEach(d => {
-            const parts = d.startDate.split('-');
-            const eventMonth = parseInt(parts[1], 10);
-            const eventYear = parseInt(parts[0], 10);
+        // 대상 월 직전 달까지 누적 (연-월로 비교해 연도가 바뀌어도 이어짐)
+        const targetMonthKey = monthKeyOfDate(currentDate);
+        const memberDuties = events.filter(e => e.type === 'duty' && e.memo === member.name);
 
-            if (eventYear === 2026 && eventMonth >= 4 && eventMonth <= prevMonthLimit) {
+        memberDuties.forEach(d => {
+            if (isCountedBeforeMonth(d.startDate, targetMonthKey)) {
                 const isKtaOrMedicMember = member.sections?.includes('KTA') || member.sections?.includes('MEDIC');
                 let type = getDutyType(d.startDate);
                 if (isKtaOrMedicMember && isDateDuringKtaPeriod(d.startDate, events)) {

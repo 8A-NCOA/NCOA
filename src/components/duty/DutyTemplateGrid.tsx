@@ -13,9 +13,7 @@ interface DutyTemplateGridProps {
     handleToggleRestriction: (day: number, section: string) => void;
     handleToggleBlcRestriction: (day: number, section: string) => void;
     ktaDayLabels: Record<number, string>;
-    setKtaDayLabels: React.Dispatch<React.SetStateAction<Record<number, string>>>;
     blcDayLabels: Record<number, string>;
-    setBlcDayLabels: React.Dispatch<React.SetStateAction<Record<number, string>>>;
     ktaSections: string[];
     blcSections: string[];
     isBlc30?: boolean;
@@ -25,8 +23,8 @@ export function DutyTemplateGrid({
     viewMode, ktaTemplate, blcTemplate,
     restrictions, blcRestrictions, restrictionBrush,
     handleToggleRestriction, handleToggleBlcRestriction,
-    ktaDayLabels, setKtaDayLabels,
-    blcDayLabels, setBlcDayLabels,
+    ktaDayLabels,
+    blcDayLabels,
     ktaSections, blcSections
 }: DutyTemplateGridProps) {
     if (viewMode === 'kta-template') {
@@ -49,7 +47,7 @@ export function DutyTemplateGrid({
                                     handleToggleRestriction(dayNum, restrictionBrush);
                                 }
                             }}
-                            className="border-r border-b border-slate-850 p-3.5 flex flex-col justify-between select-none relative transition-all h-full min-h-0 bg-slate-900/20 hover:bg-slate-900/40 cursor-crosshair"
+                            className="border-r border-b border-slate-850 p-3.5 flex flex-col justify-between select-none relative h-full min-h-0 bg-slate-900/20 hover:bg-slate-900/40 cursor-crosshair"
                         >
                             <div className="flex flex-col h-full min-h-0 w-full justify-between">
                                 <div className="flex justify-between items-center shrink-0 h-6">
@@ -66,14 +64,7 @@ export function DutyTemplateGrid({
                                         </span>
                                         {customLabel && (
                                             <span
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    const next = { ...ktaDayLabels };
-                                                    delete next[dayNum];
-                                                    setKtaDayLabels(next);
-                                                }}
-                                                className="text-[8px] font-black px-1.5 py-0.5 rounded leading-none shrink-0 bg-rose-950/80 text-rose-455 border border-rose-900/35 cursor-pointer hover:bg-rose-900 hover:text-white transition-all select-none"
-                                                title="클릭 시 라벨 삭제"
+                                                className="text-[8px] font-black px-1.5 py-0.5 rounded leading-none shrink-0 bg-rose-950/80 text-rose-455 border border-rose-900/35 select-none"
                                             >
                                                 {customLabel}
                                             </span>
@@ -150,7 +141,7 @@ export function DutyTemplateGrid({
                                       handleToggleBlcRestriction(dayNum, restrictionBrush);
                                   }
                               }}
-                            className="border-r border-b border-slate-850 p-3.5 flex flex-col justify-between select-none relative transition-all h-full min-h-0 bg-slate-900/20 hover:bg-slate-900/40 cursor-crosshair"
+                            className="border-r border-b border-slate-850 p-3.5 flex flex-col justify-between select-none relative h-full min-h-0 bg-slate-900/20 hover:bg-slate-900/40 cursor-crosshair"
                         >
                             <div className="flex flex-col h-full min-h-0 w-full justify-between">
                                 <div className="flex justify-between items-center shrink-0 h-6">
@@ -163,14 +154,7 @@ export function DutyTemplateGrid({
                                         </span>
                                         {customLabel && (
                                             <span
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    const next = { ...blcDayLabels };
-                                                    delete next[dayNum];
-                                                    setBlcDayLabels(next);
-                                                }}
-                                                className="text-[8px] font-black px-1.5 py-0.5 rounded leading-none shrink-0 bg-indigo-950/80 text-indigo-400 border border-indigo-900/35 cursor-pointer hover:bg-indigo-900 hover:text-white transition-all select-none"
-                                                title="클릭 시 라벨 삭제"
+                                                className="text-[8px] font-black px-1.5 py-0.5 rounded leading-none shrink-0 bg-indigo-950/80 text-indigo-400 border border-indigo-900/35 select-none"
                                             >
                                                 {customLabel}
                                             </span>

@@ -15,8 +15,6 @@ interface CalendarGridProps {
     baseDate?: Date;
     events: CalendarEvent[];
     onDateClick: (dateStr: string) => void;
-    ktaDayLabels?: Record<number, string>;
-    blcDayLabels?: Record<number, string>;
     calendarMode?: 'schedule' | 'duty';
     members?: CalendarMember[];
 }

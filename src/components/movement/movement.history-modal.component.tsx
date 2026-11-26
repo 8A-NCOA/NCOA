@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { X, Calendar, ClipboardList } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { MovementRecord } from '../../types/movement/movement.type';
+import { createMdYearResolver } from '../../utils/movement/movement.year';
 
 interface MovementHistoryModalProps {
     memberName: string;
@@ -22,7 +23,8 @@ export function MovementHistoryModal({
     sheetWeeks = [],
     timeline = []
 }: MovementHistoryModalProps) {
-    const currentYear = baseDate ? baseDate.getFullYear() : new Date().getFullYear();
+    // 'M.D' 의 연도: 현재 타임라인 첫 날짜를 기준일에서 가장 가까운 해로 잡고, 다른 주차도 그 날짜에서 가장 가까운 해로 정한다
+    const yearOf = createMdYearResolver(timeline, baseDate);
 
     // Prevent background scrolling when modal is open
     useEffect(() => {
@@ -82,18 +84,7 @@ export function MovementHistoryModal({
     };
 
     // Helper to calculate date with year boundary handling relative to timeline start
-    const getRelativeDate = (m: number, d: number) => {
-        let yr = currentYear;
-        if (timeline.length > 0) {
-            const [firstM] = timeline[0].split('.').map(Number);
-            if (firstM === 12 && m === 1) {
-                yr = currentYear + 1;
-            } else if (firstM === 1 && m === 12) {
-                yr = currentYear - 1;
-            }
-        }
-        return new Date(yr, m - 1, d, 12, 0, 0, 0);
-    };
+    const getRelativeDate = (m: number, d: number) => new Date(yearOf(m, d), m - 1, d, 12, 0, 0, 0);
 
     // Group movements by week key
     const groupedWeeks: Record<string, MovementRecord[]> = {};

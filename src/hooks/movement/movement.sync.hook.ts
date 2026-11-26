@@ -17,8 +17,8 @@ import { sheetCellToStatus } from '../../utils/movement/movement.sheet-cell';
 /** 이 기기에서 저장한 뒤 이 시간 안에 오는 시트 갱신 신호는 조용히 다시 읽는다 */
 const SELF_UPDATE_WINDOW_MS = 90_000;
 
-/** 주차 데이터 캐시 버전. 파싱 결과 형태가 바뀌면 올린다. (v4: 활동이 없는 인원 행 포함) */
-const MOVEMENT_CACHE_VERSION = 'v4';
+/** 주차 데이터 캐시 버전. 파싱 결과 형태가 바뀌면 올린다. (v4: 활동이 없는 인원 행 포함, v5: 시트 1행 연도 사용 — 12월~1월 주차 순서) */
+const MOVEMENT_CACHE_VERSION = 'v5';
 
 const SPREADSHEET_URLS = {
     test: "https://docs.google.com/spreadsheets/d/1eyiNzyvJ1BguGzzpkYDnVegi-4U-zuCacCvy9bOW8R8/export?format=csv&gid=1529486829",
@@ -349,7 +349,10 @@ export function useMovementSync(baseDate?: Date) {
                         if (seenDates.has(dateStr)) continue;
                         seenDates.add(dateStr);
 
-                        const date = new Date(year, m - 1, d, 12, 0, 0, 0);
+                        // 1행 날짜는 '2026. 12. 30' 처럼 연도를 포함한다. 시트가 12월~1월에 걸치면
+                        // 올해 연도로 통일했을 때 1월 열이 12월 열보다 앞으로 정렬되므로, 시트의 연도를 쓴다.
+                        const sheetYear = parseInt(parts[0]);
+                        const date = new Date(sheetYear >= 2000 ? sheetYear : year, m - 1, d, 12, 0, 0, 0);
                         cols.push({ col: c, date, dateStr });
                     }
 

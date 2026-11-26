@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { collection, query, onSnapshot, doc, addDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, query, onSnapshot, doc, addDoc, deleteDoc, serverTimestamp, runTransaction, deleteField } from 'firebase/firestore';
 import { db, auth } from '../../lib/firebase';
 import type { CalendarEvent, CalendarMember } from '../../types/calendar/calendar.type';
 
@@ -9,6 +9,11 @@ export interface DutyHoliday {
     startDate: string;
     endDate: string;
 }
+
+const INITIAL_SUBSCRIPTIONS = [
+    'schedules', 'members', 'ktaTemplate', 'blcTemplate',
+    'personalRestrictions', 'dutyDayLabels', 'monthlyDayLabels', 'dutyBrushSections'
+] as const;
 
 export function useDutySync(showToast: (message: string, type?: 'success' | 'error') => void) {
     // Firestore 원본 데이터
@@ -29,14 +34,16 @@ export function useDutySync(showToast: (message: string, type?: 'success' | 'err
         }));
 
     // KTA Template 연관 상태
-    const [extraBefore, setExtraBefore] = useState<number>(0);
-    const [extraAfter, setExtraAfter] = useState<number>(0);
-    const [ktaDayLabels, setKtaDayLabels] = useState<Record<number, string>>({});
+    // Day 커스텀 배지 라벨은 당직 탭 전용이다. settings/dutyDayLabels 에만 저장하고
+    // 다른 탭이 읽는 템플릿 문서(settings/ktaTemplate, blcTemplate)에는 쓰지 않는다.
+    // 예전에 템플릿 문서 dayLabels 에 저장된 라벨은, 새 문서에 아직 값이 없을 때만 보여준다(첫 수정 시 이전).
+    const [dutyDayLabels, setDutyDayLabels] = useState<{ kta?: Record<number, string>; blc?: Record<number, string> }>({});
+    const [ktaLegacyDayLabels, setKtaLegacyDayLabels] = useState<Record<number, string>>({});
     const [restrictions, setRestrictions] = useState<Record<number, Record<string, boolean>>>({});
     const [ktaSections, setKtaSections] = useState<string[]>([]);
 
     // BLC Template 연관 상태
-    const [blcDayLabels, setBlcDayLabels] = useState<Record<number, string>>({});
+    const [blcLegacyDayLabels, setBlcLegacyDayLabels] = useState<Record<number, string>>({});
     const [blcRestrictions, setBlcRestrictions] = useState<Record<number, Record<string, boolean>>>({});
     const [blcSections, setBlcSections] = useState<string[]>([]);
 
@@ -53,25 +60,33 @@ export function useDutySync(showToast: (message: string, type?: 'success' | 'err
         paoBlc: 'PAO'
     });
 
-    const [loading, setLoading] = useState(true);
+    // 당직 탭이 처음 화면을 그리기 전에 받아야 하는 구독 목록.
+    // 모두 첫 응답(성공 또는 실패)을 받은 뒤에만 달력을 그려, 데이터가 하나씩 도착할 때마다
+    // 무거운 달력 계산을 반복하지 않게 한다.
+    const [loadedKeys, setLoadedKeys] = useState<ReadonlySet<string>>(() => new Set());
+    const loading = INITIAL_SUBSCRIPTIONS.some(key => !loadedKeys.has(key));
 
     useEffect(() => {
-        setLoading(true);
+        const markLoaded = (key: string) => {
+            setLoadedKeys(prev => (prev.has(key) ? prev : new Set(prev).add(key)));
+        };
         const qSchedules = query(collection(db, "schedules"));
         const unsubSchedules = onSnapshot(qSchedules, (snapshot) => {
+            markLoaded('schedules');
             const data = snapshot.docs.map(d => ({
                 id: d.id,
                 ...d.data()
             })) as CalendarEvent[];
             setEvents(data);
-            setLoading(false);
         }, (error) => {
+            markLoaded('schedules');
             console.error("Schedules fetch error:", error);
             showToast("일정 데이터를 불러오는데 실패했습니다.", "error");
         });
 
         const qMembers = query(collection(db, 'members'));
         const unsubMembers = onSnapshot(qMembers, (snapshot) => {
+            markLoaded('members');
             const data = (snapshot.docs.map(d => ({
                 id: d.id,
                 ...d.data()
@@ -97,18 +112,18 @@ export function useDutySync(showToast: (message: string, type?: 'success' | 'err
             });
             setMembers(data);
         }, (error) => {
+            markLoaded('members');
             console.error("Members fetch error:", error);
         });
 
         // KTA Template 실시간 구독 추가
         const unsubKtaTemplate = onSnapshot(doc(db, 'settings', 'ktaTemplate'), (snapshot) => {
+            markLoaded('ktaTemplate');
             if (snapshot.exists()) {
                 const data = snapshot.data();
                 setKtaTemplate(data);
 
-                if (typeof data.extraBefore === 'number') setExtraBefore(data.extraBefore);
-                if (typeof data.extraAfter === 'number') setExtraAfter(data.extraAfter);
-                if (data.dayLabels) setKtaDayLabels(data.dayLabels);
+                setKtaLegacyDayLabels(data.dayLabels || {});
                 
                 if (Array.isArray(data.sections)) {
                     setKtaSections(data.sections);
@@ -137,15 +152,17 @@ export function useDutySync(showToast: (message: string, type?: 'success' | 'err
                 }
             }
         }, (error) => {
+            markLoaded('ktaTemplate');
             console.error("KTA template fetch error:", error);
         });
 
         // BLC Template 실시간 구독 추가
         const unsubBlcTemplate = onSnapshot(doc(db, 'settings', 'blcTemplate'), (snapshot) => {
+            markLoaded('blcTemplate');
             if (snapshot.exists()) {
                 const data = snapshot.data();
                 setBlcTemplate(data);
-                if (data.dayLabels) setBlcDayLabels(data.dayLabels);
+                setBlcLegacyDayLabels(data.dayLabels || {});
                 
                 if (Array.isArray(data.sections)) {
                     setBlcSections(data.sections);
@@ -174,31 +191,50 @@ export function useDutySync(showToast: (message: string, type?: 'success' | 'err
                 }
             }
         }, (error) => {
+            markLoaded('blcTemplate');
             console.error("BLC template fetch error:", error);
         });
 
         // 개인별 당직 제한 실시간 구독 추가
         const unsubPersonalRestrictions = onSnapshot(doc(db, 'settings', 'personalRestrictions'), (snapshot) => {
+            markLoaded('personalRestrictions');
             if (snapshot.exists()) {
                 setPersonalRestrictions(snapshot.data() as Record<string, string[]>);
             }
         }, (error) => {
+            markLoaded('personalRestrictions');
             console.error("Personal restrictions fetch error:", error);
+        });
+
+        // 당직 탭 전용 Day 배지 라벨 구독
+        const unsubDutyDayLabels = onSnapshot(doc(db, 'settings', 'dutyDayLabels'), (snapshot) => {
+            markLoaded('dutyDayLabels');
+            const data = snapshot.exists() ? snapshot.data() : {};
+            setDutyDayLabels({
+                kta: data.kta && typeof data.kta === 'object' ? data.kta : undefined,
+                blc: data.blc && typeof data.blc === 'object' ? data.blc : undefined
+            });
+        }, (error) => {
+            markLoaded('dutyDayLabels');
+            console.error("Duty day labels fetch error:", error);
         });
 
         // 월간 날짜 레이블 실시간 구독 추가
         const unsubMonthlyDayLabels = onSnapshot(doc(db, 'settings', 'monthlyDayLabels'), (snapshot) => {
+            markLoaded('monthlyDayLabels');
             if (snapshot.exists()) {
                 setMonthlyDayLabels(snapshot.data() as Record<string, string>);
             } else {
                 setMonthlyDayLabels({});
             }
         }, (error) => {
+            markLoaded('monthlyDayLabels');
             console.error("Monthly day labels fetch error:", error);
         });
 
         // 브러시 적용 섹션 설정 실시간 구독 추가
         const unsubDutyBrushSections = onSnapshot(doc(db, 'settings', 'dutyBrushSections'), (snapshot) => {
+            markLoaded('dutyBrushSections');
             if (snapshot.exists()) {
                 setDutyBrushSections(prev => ({
                     ...prev,
@@ -206,6 +242,7 @@ export function useDutySync(showToast: (message: string, type?: 'success' | 'err
                 }));
             }
         }, (error) => {
+            markLoaded('dutyBrushSections');
             console.error("Duty brush sections fetch error:", error);
         });
 
@@ -216,6 +253,7 @@ export function useDutySync(showToast: (message: string, type?: 'success' | 'err
             unsubBlcTemplate();
             unsubPersonalRestrictions();
             unsubMonthlyDayLabels();
+            unsubDutyDayLabels();
             unsubDutyBrushSections();
         };
     }, [showToast]);
@@ -249,11 +287,43 @@ export function useDutySync(showToast: (message: string, type?: 'success' | 'err
         }
     };
 
+    const ktaDayLabels = dutyDayLabels.kta ?? ktaLegacyDayLabels;
+    const blcDayLabels = dutyDayLabels.blc ?? blcLegacyDayLabels;
+
+    /** Day 배지 라벨 추가(text) 또는 삭제(null). 당직 탭 전용 문서에만 쓴다. */
+    const handleSetDayLabel = async (mode: 'kta' | 'blc', day: number, text: string | null) => {
+        const labelsRef = doc(db, 'settings', 'dutyDayLabels');
+        const templateRef = doc(db, 'settings', mode === 'kta' ? 'ktaTemplate' : 'blcTemplate');
+        try {
+            await runTransaction(db, async (tx) => {
+                const labelsSnap = await tx.get(labelsRef);
+                const templateSnap = await tx.get(templateRef);
+                const saved = labelsSnap.exists() ? labelsSnap.data()[mode] : undefined;
+                const legacy = templateSnap.exists() ? templateSnap.data().dayLabels : undefined;
+                // 새 문서에 값이 없으면 예전 템플릿 라벨을 이어받는다.
+                const base: Record<string, string> = { ...((saved && typeof saved === 'object') ? saved : (legacy || {})) };
+                if (text === null) delete base[String(day)];
+                else base[String(day)] = text;
+                // mergeFields: 이 모드의 라벨 맵 전체를 교체(삭제가 실제로 반영되도록)
+                tx.set(labelsRef, { [mode]: base }, { mergeFields: [mode] });
+                // 템플릿 문서에 남은 예전 라벨은 제거해 당직 탭 밖으로 노출되지 않게 한다.
+                if (legacy !== undefined) tx.update(templateRef, { dayLabels: deleteField() });
+            });
+            const label = mode === 'kta' ? 'KTA' : 'BLC';
+            showToast(text === null
+                ? `${label} Day ${day} 라벨을 삭제했습니다.`
+                : `${label} Day ${day}에 '${text}' 라벨을 등록했습니다.`);
+        } catch (e) {
+            console.error("Error saving duty day label:", e);
+            showToast(navigator.onLine ? "라벨 저장 중 오류가 발생했습니다." : "네트워크에 연결되어 있지 않아 라벨을 저장하지 못했습니다.", "error");
+        }
+    };
+
     return {
         events, members, ktaTemplate, blcTemplate, personalRestrictions, loading,
-        extraBefore, setExtraBefore, extraAfter, setExtraAfter,
-        ktaDayLabels, setKtaDayLabels, restrictions, setRestrictions,
-        blcDayLabels, setBlcDayLabels, blcRestrictions, setBlcRestrictions,
+        ktaDayLabels, blcDayLabels, handleSetDayLabel,
+        restrictions, setRestrictions,
+        blcRestrictions, setBlcRestrictions,
         monthlyDayLabels, setMonthlyDayLabels,
         dutyBrushSections, setDutyBrushSections,
         dutyHolidays, handleAddDutyHoliday, handleDeleteDutyHoliday,

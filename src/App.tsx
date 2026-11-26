@@ -303,17 +303,17 @@ function App() {
     setScheduleText(sortedSchedule);
   }, [baseDate, ktaBatches, ktaTemplate, blcBatches, blcTemplate, holidays, dutyHolidays]);
 
-  if (showDutyScheduler) {
-    return (
-      <Suspense fallback={
-        <div className="min-h-screen flex items-center justify-center bg-slate-50">
-          <div className="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
-        </div>
-      }>
-        <DutySchedulerWorkspace onClose={() => setShowDutyScheduler(false)} />
-      </Suspense>
-    );
-  }
+  // 당직 플래너는 원래 화면 위에 띄운다. 원래 화면(점호·캘린더·외특 등)은 지우지 않고 숨겨만 두어,
+  // 플래너를 닫을 때 탭들을 처음부터 다시 만들고 데이터를 다시 받는 지연이 없게 한다.
+  const dutySchedulerOverlay = showDutyScheduler && (
+    <Suspense fallback={
+      <div className="fixed inset-0 z-50 min-h-screen flex items-center justify-center bg-slate-50">
+        <div className="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+      </div>
+    }>
+      <DutySchedulerWorkspace onClose={() => setShowDutyScheduler(false)} />
+    </Suspense>
+  );
 
   const renderTabFallback = () => (
     <div className="flex items-center justify-center py-20">
@@ -322,7 +322,9 @@ function App() {
   );
 
   return (
-    <div className="min-h-screen bg-gray-50 flex justify-center items-start sm:items-center relative overflow-x-hidden">
+    <>
+    {dutySchedulerOverlay}
+    <div className={`min-h-screen bg-gray-50 flex justify-center items-start sm:items-center relative overflow-x-hidden ${showDutyScheduler ? 'hidden' : ''}`}>
       {/* 데스크톱 전용 모바일 프레임 외곽 플로팅 위젯 카드 */}
       <div className="hidden lg:flex flex-col gap-4 fixed left-[calc(50%+240px)] top-1/2 -translate-y-1/2 p-6 bg-white rounded-xl border border-gray-100 shadow-lg max-w-xs z-10">
         <div className="w-12 h-12 bg-indigo-50 rounded-xl flex items-center justify-center text-indigo-650">
@@ -384,6 +386,7 @@ function App() {
         <BottomNav activeTab={activeTab} onTabChange={setActiveTab} />
       </main>
     </div>
+    </>
   );
 }
 

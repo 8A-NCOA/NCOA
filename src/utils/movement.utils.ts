@@ -1,5 +1,6 @@
 import { getRankDetails } from '../lib/rankUtils';
 import type { MovementRecord } from '../types/movement/movement.type';
+import { createMdYearResolver, mdToIso } from './movement/movement.year';
 
 /**
  * Extracts the day count (number) from a given reason string.
@@ -87,16 +88,14 @@ export function applyDutySchedulesToDataList(
         return dataList;
     }
 
-    const currentYear = baseDate ? baseDate.getFullYear() : new Date().getFullYear();
+    // 'M.D' 의 연도: 타임라인 첫 날짜를 기준일에서 가장 가까운 해로 잡고 이어서 정한다 (해를 넘는 주차 대응)
+    const yearOf = createMdYearResolver(timeline, baseDate);
 
     // 1. 타임라인의 각 날짜 문자열("M.D")을 ISO ("YYYY-MM-DD")로 매핑
     const timelineIsoMap = new Map<string, string>();
     timeline.forEach(dateStr => {
-        const [m, d] = dateStr.split('.').map(Number);
-        if (!isNaN(m) && !isNaN(d)) {
-            const iso = `${currentYear}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-            timelineIsoMap.set(dateStr, iso);
-        }
+        const iso = mdToIso(dateStr, yearOf);
+        if (iso) timelineIsoMap.set(dateStr, iso);
     });
 
     // 2. 기존 dataList를 깊은 복사하여 원본을 보존
@@ -190,7 +189,7 @@ export function applyDutySchedulesToDataList(
     const firstDateStr = timeline[0];
     const [firstM, firstD] = firstDateStr.split('.').map(Number);
     if (!isNaN(firstM) && !isNaN(firstD)) {
-        const prevDate = new Date(currentYear, firstM - 1, firstD - 1, 12, 0, 0, 0);
+        const prevDate = new Date(yearOf(firstM, firstD), firstM - 1, firstD - 1, 12, 0, 0, 0);
         const prevIso = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}-${String(prevDate.getDate()).padStart(2, '0')}`;
         const prevDateMD = `${prevDate.getMonth() + 1}.${prevDate.getDate()}`;
 
@@ -300,6 +299,7 @@ export function formatMDToISO(dateStr: string, baseYear: number, referenceMonth?
  * 타임라인의 첫 토요일이 들어 있는 수~화를 주기로 본다. 토요일이 없으면 첫 날짜가 들어 있는 수~화.
  * coreMDs에는 타임라인에 없는 날짜도 들어 있다 (예: 11.18, 11.19).
  */
+/** currentYear: 타임라인 첫 날짜의 연도 (timelineStartYear 로 구한다. 기준일의 연도가 아니다) */
 export function getCoreWindow(timeline: string[], currentYear: number): {
     coreStartIso: string;
     coreEndIso: string;

@@ -4,6 +4,7 @@ import { X, Plus, Trash2, ChevronDown, Check, Search } from 'lucide-react';
 import { doc, updateDoc } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { getRankDetails } from '../../lib/rankUtils';
+import { nearestYearDate, toIsoDate } from '../../utils/movement/movement.year';
 import type { CalendarMember, PenaltyItem } from '../../types/calendar/calendar.type';
 
 interface PenaltyDutyModalProps {
@@ -88,11 +89,8 @@ export function PenaltyDutyModal({
     const handleAddPenaltyItem = async () => {
         if (!selectedMemberToAdd) return;
         
-        let formattedDate = '';
-        if (penaltyDateToAdd) {
-            const [, m, d] = penaltyDateToAdd.split('-');
-            formattedDate = `${m}/${d}`;
-        }
+        // 연도까지 'YYYY-MM-DD' 로 저장한다. (예전 데이터는 'MM/DD' 였다 — 화면·정렬은 두 형식을 모두 읽는다)
+        const formattedDate = /^\d{4}-\d{2}-\d{2}$/.test(penaltyDateToAdd) ? penaltyDateToAdd : '';
         const cleanReason = penaltyReasonToAdd.trim() || (penaltyTypeToAdd === 'warning' ? '주의 / 경고' : '페널티 당직');
 
         const newItem: PenaltyItem = {
@@ -258,20 +256,24 @@ export function PenaltyDutyModal({
                                     {/* Penalty items detail: 당직 -> 날짜 -> 사유 (날짜 순 정렬: 과거 -> 최신) */}
                                     <div className="space-y-1.5 pt-1">
                                         {[...memberPenalties].sort((a, b) => {
+                                            // 'MM/DD' 에는 연도가 없다. 등록 시각(없으면 오늘)에서 가장 가까운 해로 정해
+                                            // 12월 페널티가 다음 해 1월 페널티보다 앞에 오게 한다.
+                                            const mdToSortKey = (m: string, d: string, item: typeof a) => {
+                                                const ref = item.createdAt ? new Date(item.createdAt) : new Date();
+                                                return toIsoDate(nearestYearDate(parseInt(m, 10), parseInt(d, 10), isNaN(ref.getTime()) ? new Date() : ref));
+                                            };
                                             const getEffectiveDate = (item: typeof a) => {
                                                 if (item.date) {
                                                     const parts = item.date.split('/');
                                                     if (parts.length === 2) {
-                                                        const m = parts[0].padStart(2, '0');
-                                                        const d = parts[1].padStart(2, '0');
-                                                        return `9999-${m}-${d}`;
+                                                        return mdToSortKey(parts[0], parts[1], item);
                                                     }
                                                     return item.date;
                                                 }
                                                 if (item.reason) {
                                                     const match = item.reason.match(/^(\d{1,2})\/(\d{1,2})/);
                                                     if (match) {
-                                                        return `9999-${match[1].padStart(2, '0')}-${match[2].padStart(2, '0')}`;
+                                                        return mdToSortKey(match[1], match[2], item);
                                                     }
                                                 }
                                                 if (item.createdAt) return item.createdAt;
@@ -282,7 +284,9 @@ export function PenaltyDutyModal({
                                             return (a.createdAt || '').localeCompare(b.createdAt || '');
                                         }).map(item => {
                                             // Extract date and clean reason
-                                            let displayDate = item.date || '';
+                                            // 'YYYY-MM-DD' 는 연도까지 'YYYY.MM.DD' 로 보여준다 (예전 'MM/DD' 데이터는 그대로)
+                                            const isoMatch = item.date?.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+                                            let displayDate = isoMatch ? `${isoMatch[1]}.${isoMatch[2]}.${isoMatch[3]}` : (item.date || '');
                                             let displayReason = item.reason;
 
                                             if (!displayDate && item.reason) {
